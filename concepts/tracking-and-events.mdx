@@ -1,0 +1,147 @@
+---
+title: "Email Tracking: Opens, Clicks, and Engagement Events"
+sidebarTitle: "Tracking & Events"
+description: "How Datamailer tracks opens, clicks, unsubscribes, bounces, and complaints via tracking pixels, click redirect URLs, and SES webhooks."
+---
+
+Datamailer records engagement through two parallel mechanisms: **in-band tracking** embedded in the email itself (open pixels and click redirects), and **out-of-band webhook events** delivered by SES through SNS. Both paths converge on the same `EmailEvent` append-only log and update the same `first_opened_at`, `open_count`, and related columns on the recipient or message row. The result is a complete, auditable engagement timeline for every email sent.
+
+---
+
+## Tracking Mechanisms
+
+### 1. Open Pixel
+
+Each campaign email contains a 1×1 transparent GIF served from Datamailer. When an email client loads the image, it records an open event.
+
+```
+GET /t/o/{tracking_token}.gif
+```
+
+- The response is always a 1×1 transparent GIF (`image/gif`), regardless of whether the token is valid.
+- A valid token resolves to a `CampaignRecipient` via its hashed token.
+- On the first open, `first_opened_at` is set. Every open increments `open_count`.
+- A `EmailEvent` row of type `open` is appended.
+- Campaign aggregate counts (`unique_open_count`, `open_count`) are refreshed.
+
+### 2. Click Redirect
+
+Links in campaign emails are rewritten to pass through Datamailer's redirect endpoint before reaching the original destination.
+
+```
+GET /t/c/{tracking_token}?url=https://original-destination.example.com/...
+```
+
+- The token is resolved to a `CampaignRecipient`.
+- The destination URL is validated: only `http` and `https` schemes with a non-empty host are permitted.
+- On the first click, `first_clicked_at` is set. Every click increments `click_count`.
+- An `EmailEvent` row of type `click` is appended with the destination URL.
+- The response is a `302` redirect to the original destination.
+
+### 3. Unsubscribe
+
+Each campaign email contains a unique unsubscribe link. The public unsubscribe page supports `GET` (render form) and `POST` (apply the unsubscribe).
+
+```
+GET  /unsubscribe/{unsubscribe_token}
+POST /unsubscribe/{unsubscribe_token}
+```
+
+Three unsubscribe scopes are supported. The form lets the contact choose their preferred scope:
+
+| Scope | Effect |
+|---|---|
+| `client` | Unsubscribes from the sending client within the audience |
+| `audience` | Unsubscribes from the entire audience across all clients |
+| `global` | Sets `global_unsubscribed_at` on the contact; blocks all marketing email |
+
+After a successful unsubscribe, the `CampaignRecipient` status is updated to `unsubscribed` and an `EmailEvent` of type `unsubscribe` is appended with the scope in `metadata`.
+
+### 4. SES Webhooks
+
+SES publishes delivery notifications through SNS to the `ses-webhooks` SQS queue. Datamailer processes these events asynchronously.
+
+```
+POST /webhooks/ses
+```
+
+The endpoint accepts SNS `Notification` and `SubscriptionConfirmation` message types. The SNS signature is verified before any processing occurs. Valid notification payloads are enqueued to SQS for async processing by a Lambda worker.
+
+---
+
+## SES Webhook Event Types
+
+The following SES event types are processed:
+
+| SES Event | Datamailer Event Type | Effect |
+|---|---|---|
+| `Send` | `sent` | Confirms SES accepted the message |
+| `Reject` | `failed` | SES rejected the message; recipient marked `failed` |
+| `Delivery` | `delivered` | Sets `delivered_at` on the recipient or message row |
+| `Bounce` | `bounce` | Hard bounces set `hard_bounced_at` on the contact and mark the recipient `bounced` |
+| `Complaint` | `complaint` | Sets `complained_at` on the contact and marks the recipient `complained` |
+| `Open` | `open` | Increments `open_count`; sets `first_opened_at` on first occurrence |
+| `Click` | `click` | Increments `click_count`; sets `first_clicked_at` on first occurrence |
+
+SES webhook events are correlated back to the sending record via `ses_message_id`. The correlation queries both `CampaignRecipient` and `TransactionalMessage` tables and applies updates to whichever matches.
+
+<Note>
+SES event publishing requires a **configuration set** to be configured on your SES identity, with an SNS event destination subscribed to the `ses-webhooks` SQS queue. Without this, Datamailer will not receive delivery, bounce, complaint, open, or click notifications from SES.
+</Note>
+
+---
+
+## EmailEvent: The Append-Only Log
+
+Every tracking action — from any source — results in a new `EmailEvent` row. Existing event rows are never modified.
+
+| Field | Description |
+|---|---|
+| `event_type` | One of: `queued`, `skipped`, `sent`, `delivered`, `open`, `click`, `unsubscribe`, `bounce`, `complaint`, `failed` |
+| `campaign` | Set for campaign-related events |
+| `campaign_recipient` | Set for campaign recipient events |
+| `transactional_message` | Set for transactional message events |
+| `contact` | The contact associated with this event |
+| `client` | The client that owns the send |
+| `audience` | The audience (for campaign events) |
+| `url` | Populated for `click` events |
+| `provider_event_id` | SES/SNS message ID, used for deduplication |
+| `metadata` | Arbitrary structured metadata (scope, bounce type, etc.) |
+| `created_at` | Immutable creation timestamp |
+
+Indexes support efficient querying by contact timeline, campaign event type, and client activity:
+
+```
+(contact_id, created_at)
+(campaign_id, event_type, created_at)
+(campaign_recipient_id, event_type)
+(client_id, created_at)
+(provider_event_id)              ← unique, used for webhook deduplication
+```
+
+---
+
+## Unique vs Total Counts
+
+Datamailer tracks both unique engagement (first occurrence per recipient) and total engagement (every occurrence):
+
+| Column | What it measures |
+|---|---|
+| `first_opened_at` | Timestamp of the recipient's first open |
+| `open_count` | Total number of open events for this recipient |
+| `first_clicked_at` | Timestamp of the recipient's first click |
+| `click_count` | Total number of click events for this recipient |
+| `unique_open_count` (campaign) | Number of recipients with `first_opened_at` set |
+| `unique_click_count` (campaign) | Number of recipients with `first_clicked_at` set |
+
+Campaign aggregate counters are refreshed after each tracking event by querying the `campaign_recipients` table directly, so they reflect the true state of all recipient rows.
+
+---
+
+## Token Security
+
+<Note>
+Tracking tokens and unsubscribe tokens are stored as **hashes only** — the plaintext token appears in the email link but is never persisted to the database. Incoming requests are resolved by hashing the raw token from the URL and looking up the matching hash. This means a compromised database does not expose valid tracking or unsubscribe tokens.
+</Note>
+
+Tokens are globally unique across the entire `campaign_recipients` table (enforced by unique constraints on `tracking_token_hash` and `unsubscribe_token_hash`). Each recipient has exactly one tracking token and one unsubscribe token for a given campaign send.

@@ -1,0 +1,162 @@
+---
+title: "Operating Datamailer: Monitoring, Throttling, and Recovery"
+description: "Production operations guide for Datamailer: queue monitoring, SES throttling, Postgres connection management, idempotency rules, and recovery procedures."
+sidebarTitle: "Operations"
+---
+
+Email sending must be reliable because client applications depend on Datamailer for email verification, password reset, course notifications, and campaigns. This guide covers the monitoring signals to watch, the throttling controls available, the idempotency rules all workers must follow, and the recovery procedures available when things go wrong.
+
+## Monitoring Checklist
+
+Every environment should have CloudWatch alarms and a dashboard covering the following signals. The CloudFormation template at `infra/cloudformation/datamailer-mvp.json` codifies these alarms.
+
+<CardGroup cols={2}>
+  <Card title="SES Delivery" icon="envelope">
+    - Bounce rate (alarm if rising toward SES account threshold)
+    - Complaint rate (alarm immediately on any meaningful rise)
+    - Send failures from SES API errors
+  </Card>
+  <Card title="SQS Queues" icon="arrow-right-arrow-left">
+    - Age of oldest message per queue (transactional queue especially)
+    - DLQ depth per queue (any depth above zero should alert)
+  </Card>
+  <Card title="Lambda Workers" icon="bolt">
+    - Error count and error rate per worker function
+    - Throttle count (indicates concurrency limits are being hit)
+    - Duration approaching the function timeout
+  </Card>
+  <Card title="Postgres" icon="database">
+    - CPU utilization
+    - Storage space remaining
+    - Active connection count
+    - Slow query log entries
+  </Card>
+  <Card title="Campaigns" icon="chart-bar">
+    - Campaigns stuck in `sending` status longer than expected
+    - Transactional email queued longer than acceptable latency threshold
+  </Card>
+  <Card title="Web Host" icon="browser">
+    - `/health/` endpoint returning non-200
+    - Gunicorn error rate and response latency
+  </Card>
+</CardGroup>
+
+## Throttling Controls
+
+SES accounts have a daily sending quota and a per-second send rate. Lambda can scale faster than SES accepts. The following controls are applied in combination to stay within SES limits.
+
+- **Lambda reserved concurrency** — hard cap on the number of concurrent Lambda executions per worker. Start with transactional 4, campaign 2, SES webhooks 2, email events 1.
+- **SQS event-source maximum concurrency** — limits how many Lambda instances the SQS event-source mapping will invoke simultaneously, independent of reserved concurrency.
+- **Small batch sizes** — keep the number of `campaign_recipient_ids` per SQS message small so each Lambda invocation does bounded work.
+- **Per-client limits** — apply app-level token bucket or per-client/audience campaign limits if a single client's volume risks the overall account send rate.
+
+<Note>
+  Transactional and campaign queues **must have separate concurrency controls**. A newsletter campaign blast must not delay password reset or email verification messages. If a campaign is overwhelming the system, lower `campaign-email` concurrency first — never touch `transactional-email` concurrency in response to campaign pressure.
+</Note>
+
+## Idempotency Rules
+
+SQS is at-least-once delivery. Every worker must be idempotent — a duplicate message must either no-op or converge on the same database state.
+
+### Campaign Recipients
+
+Before sending, load the `campaign_recipients` row from Postgres and check its current status. Rows in any terminal state (`sent`, `skipped`, `bounced`, `complained`) must be acknowledged without another SES API call.
+
+```text
+load campaign_recipient row
+if status is sent (or other terminal state):
+    acknowledge job — do not call SES
+else:
+    send via SES
+    store ses_message_id on row
+    set status = sent
+    append sent event to email_events
+```
+
+### Transactional Messages
+
+Before sending, load the `transactional_messages` row and check the `(client_id, idempotency_key)` pair. If a message with the same pair has already reached a terminal state, acknowledge the job without another SES call.
+
+### Tracking Events
+
+Tracking events (opens, clicks, unsubscribes) may be appended to `email_events` more than once when product policy allows. However, summary fields — first open timestamp, unique click flag, unsubscribe state — must use the `idempotency_key`, `tracking_token`, and source row IDs to distinguish **total** counts from **unique** counts and avoid double-counting.
+
+### SES Webhook Events
+
+Deduplicate SES webhook events by `provider_event_id` when present. The webhook processor must correlate `ses_message_id` to `campaign_recipients` or `transactional_messages` before appending `email_events` or updating summary columns.
+
+## Postgres Connection Management
+
+Lambda concurrency can exhaust Postgres connections quickly if unchecked. Apply these controls from the start:
+
+- **Conservative concurrency** at launch (see throttling controls above).
+- **Short database transactions** — open a connection, do the work, close it promptly. Avoid holding connections across SES API calls.
+- **Small batch sizes** — limit per-invocation connection hold time.
+- **Separate credentials** — `datamailer_app` for the web host, `datamailer_worker` for Lambda, with least privilege for each.
+- **RDS Proxy** — add when sustained Lambda worker pressure triggers `DatabaseConnections` alarms or connection wait errors. Lower event-source maximum concurrency first as the immediate mitigation.
+
+## Queue Cost
+
+SQS queue cost is not a meaningful cost driver relative to SES delivery and database costs. For reference:
+
+- **Idle polling** — with 4 queues, 2 Lambda pollers per queue, and 20-second long polling, approximately 1,071,360 receive requests/month are generated. After the 1M request free tier, this costs roughly **$0.03/month**. A pessimistic estimate with 5 pollers per queue reaches roughly **$0.67/month**.
+- **Campaign sends** — at 720,000 campaign emails/month with 10 messages per SQS batch, the combined SendMessageBatch, ReceiveMessage, and DeleteMessage requests total approximately 216,000/month, adding roughly **$0.09/month** before the free tier.
+
+Separate queues are used to protect transactional email from campaign backlog and to make retries, DLQs, and alarms easier to reason about independently.
+
+## Recovery Procedures
+
+### Retry Failed Campaign Recipients
+
+1. Pause the campaign in the product UI or Django admin to stop new send attempts.
+2. Investigate the root cause — check Lambda logs, DLQ messages, and SES error responses.
+3. Fix the root cause before retrying.
+4. Re-enqueue `campaign-email` messages only for recipients still in a non-terminal state (`pending` or `failed`). Idempotency prevents re-sending rows already marked `sent`.
+5. Resume the campaign and confirm the `campaign-email` queue drains and the DLQ stays empty.
+
+### Replay DLQ Messages
+
+1. Identify the DLQ with the active alarm.
+2. Sample messages using `aws sqs receive-message` **without deleting them** — inspect the body and check Lambda logs for the matching `messageId` or `idempotency_key`.
+3. Fix the root cause before replaying anything.
+4. Replay by sending the same message body back to the source queue, then delete the DLQ copy.
+5. For campaign jobs, verify recipient state in Postgres first so idempotency prevents duplicate sends.
+
+### Recompute Campaign Aggregate Counters
+
+If campaign stats diverge from the underlying `campaign_recipients` and `email_events` tables (e.g. after a DLQ replay or partial batch failure), recompute aggregate counters from the source rows. This is a read-then-write operation and is safe to run multiple times.
+
+### Manually Suppress a Contact
+
+If the `ses-webhooks` worker is degraded or DLQ messages require replay, it may be necessary to manually suppress a contact to prevent further sends to a bounced or complained address. Add a suppression record directly through the Django admin or via a management command before resuming sends.
+
+### Pause and Resume a Campaign
+
+1. Pause the campaign through the product UI or Django admin.
+2. If queue pressure continues, disable or reduce `campaign-email` event-source maximum concurrency.
+3. Investigate failed recipients and DLQ messages.
+4. Resume only `pending` or `failed` recipients after the root cause is confirmed fixed.
+5. Confirm the `transactional-email` queue age stayed below its alarm threshold throughout the campaign incident — transactional email must not have been delayed.
+
+## Local Development with LocalStack
+
+For local development, Datamailer supports LocalStack to emulate SQS and SES without real AWS credentials.
+
+```bash
+# Start LocalStack alongside the app
+docker compose --profile aws-local up
+```
+
+The `docker-compose.yml` `aws-local` profile starts LocalStack on port `4566` with SQS and SES services enabled. Point the application at LocalStack by setting `AWS_ENDPOINT_URL=http://localhost:4566` in your `.env` file alongside the standard `SQS_*_QUEUE_URL` environment variables.
+
+```bash
+# .env settings for LocalStack
+AWS_ENDPOINT_URL=http://localhost:4566
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=test
+AWS_SECRET_ACCESS_KEY=test
+SQS_TRANSACTIONAL_EMAIL_QUEUE_URL=http://localhost:4566/000000000000/transactional-email
+SQS_CAMPAIGN_EMAIL_QUEUE_URL=http://localhost:4566/000000000000/campaign-email
+SQS_SES_WEBHOOKS_QUEUE_URL=http://localhost:4566/000000000000/ses-webhooks
+SQS_EMAIL_EVENTS_QUEUE_URL=http://localhost:4566/000000000000/email-events
+```

@@ -1,0 +1,225 @@
+---
+title: "PUT/POST/DELETE /api/contacts/{id}/tags — Manage Contact Tags"
+sidebarTitle: "Contact Tags"
+description: "Replace, add, or remove audience-scoped tags on a contact. PUT replaces the complete tag set; POST and DELETE toggle individual tags by slug."
+---
+
+Tags in Datamailer are audience-scoped labels that let you segment contacts for campaign targeting. Three endpoints cover different tagging workflows: a bulk replace for sync operations, and single-tag add and remove for toggle-style interactions. All three require the contact to have an existing client-scoped subscription record within the specified audience.
+
+## Endpoints overview
+
+<CardGroup cols={3}>
+  <Card title="PUT …/tags" icon="arrow-right-arrow-left">
+    Replace the full set of audience tags in one call.
+  </Card>
+  <Card title="POST …/tags/{tag_slug}" icon="plus">
+    Add a single tag without affecting others.
+  </Card>
+  <Card title="DELETE …/tags/{tag_slug}" icon="minus">
+    Remove a single tag without affecting others.
+  </Card>
+</CardGroup>
+
+## Authentication
+
+All three endpoints require a Bearer token for the client whose slug is passed in the request body.
+
+```
+Authorization: Bearer <client-api-key>
+```
+
+---
+
+## PUT /api/contacts/{contact_id}/tags
+
+Replaces the entire set of audience-scoped tags on the contact. Tags present in the existing set but absent from `tags` are removed. Tags in `tags` that do not yet exist for the audience are created automatically.
+
+```
+PUT /api/contacts/{contact_id}/tags
+```
+
+### Path parameters
+
+<ParamField path="contact_id" type="integer" required>
+  The internal Datamailer contact ID returned by prior upsert or status calls.
+</ParamField>
+
+### Request body
+
+<ParamField body="tags" type="string[]" required>
+  Complete list of tag name strings that the contact should have after this call. Pass `[]` to clear all audience tags.
+</ParamField>
+
+<ParamField body="audience" type="string" required>
+  Slug of the audience whose tags are being replaced. Scopes the operation to this audience's tag namespace.
+</ParamField>
+
+<ParamField body="client" type="string" required>
+  Slug of the authenticated client. Must match the bearer token's client.
+</ParamField>
+
+### Example
+
+```bash
+curl -X PUT https://datamailer.example.com/api/contacts/42/tags \
+  -H "Authorization: Bearer dm_dtccourses_demo_transactional_email_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tags": ["course-ml-zoomcamp", "cohort-2024"],
+    "audience": "dtc-courses",
+    "client": "dtc-courses"
+  }'
+```
+
+<Tip>
+  Use `PUT` for bulk sync workflows — for example, after importing a fresh list of tag assignments from your CRM. A single call atomically removes stale tags and adds new ones, without requiring knowledge of the current tag state.
+</Tip>
+
+---
+
+## POST /api/contacts/{contact_id}/tags/{tag_slug}
+
+Adds a single tag to the contact. The tag slug is derived from `tag_slug` in the URL path using Django's `slugify` function. If no tag with that slug exists for the audience it is created automatically. Existing tags on the contact are not affected.
+
+```
+POST /api/contacts/{contact_id}/tags/{tag_slug}
+```
+
+### Path parameters
+
+<ParamField path="contact_id" type="integer" required>
+  The internal Datamailer contact ID.
+</ParamField>
+
+<ParamField path="tag_slug" type="string" required>
+  The slug of the tag to add. Must be a non-empty slugifiable string.
+</ParamField>
+
+### Request body
+
+<ParamField body="audience" type="string" required>
+  Slug of the audience that owns the tag namespace.
+</ParamField>
+
+<ParamField body="client" type="string" required>
+  Slug of the authenticated client.
+</ParamField>
+
+### Example
+
+```bash
+curl -X POST https://datamailer.example.com/api/contacts/42/tags/cohort-2024 \
+  -H "Authorization: Bearer dm_dtccourses_demo_transactional_email_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "audience": "dtc-courses",
+    "client": "dtc-courses"
+  }'
+```
+
+<Tip>
+  Use `POST` and `DELETE` for event-driven toggle workflows — for example, adding `opted-in-sms` when a user checks a checkbox, or removing `active-trial` when a trial expires. These calls are safe to retry: adding an already-present tag or removing an absent tag is a no-op.
+</Tip>
+
+---
+
+## DELETE /api/contacts/{contact_id}/tags/{tag_slug}
+
+Removes a single tag from the contact within the specified audience. If the contact does not have the tag the call succeeds silently. Other tags are not affected.
+
+```
+DELETE /api/contacts/{contact_id}/tags/{tag_slug}
+```
+
+### Path parameters
+
+<ParamField path="contact_id" type="integer" required>
+  The internal Datamailer contact ID.
+</ParamField>
+
+<ParamField path="tag_slug" type="string" required>
+  The slug of the tag to remove.
+</ParamField>
+
+### Request body
+
+<ParamField body="audience" type="string" required>
+  Slug of the audience that owns the tag namespace.
+</ParamField>
+
+<ParamField body="client" type="string" required>
+  Slug of the authenticated client.
+</ParamField>
+
+### Example
+
+```bash
+curl -X DELETE https://datamailer.example.com/api/contacts/42/tags/active-trial \
+  -H "Authorization: Bearer dm_dtccourses_demo_transactional_email_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "audience": "dtc-courses",
+    "client": "dtc-courses"
+  }'
+```
+
+---
+
+## Response
+
+All three endpoints return HTTP `200` with the full contact status payload plus the updated `tags` array.
+
+```json
+{
+  "contact_id": 42,
+  "email": "learner@example.com",
+  "exists": true,
+  "verified": true,
+  "verified_at": "2024-09-01T10:00:00Z",
+  "email_validation": {
+    "status": "externally_validated",
+    "reason": "client signup validation",
+    "validated_at": "2024-09-01T10:00:00Z"
+  },
+  "global_unsubscribed": false,
+  "hard_bounced": false,
+  "complained": false,
+  "audience": {
+    "slug": "dtc-courses",
+    "subscribed": false,
+    "status": null,
+    "verified": false,
+    "verified_at": null,
+    "unsubscribed_at": null,
+    "unsubscribe_reason": ""
+  },
+  "client": {
+    "slug": "dtc-courses",
+    "subscribed": true,
+    "status": "subscribed",
+    "verified": true,
+    "verified_at": "2024-09-01T10:00:00Z",
+    "unsubscribed_at": null,
+    "unsubscribe_reason": ""
+  },
+  "can_send_marketing": true,
+  "can_send_transactional": true,
+  "tags": ["cohort-2024", "course-ml-zoomcamp"]
+}
+```
+
+The `tags` array contains tag **slugs** sorted alphabetically. Tag slugs are the `slugify`-normalized form of the tag name passed during creation.
+
+## Error codes
+
+| Field | Error code | Meaning |
+|---|---|---|
+| `contact_id` | `not_found` | No contact with that ID exists, or the contact has no client subscription in this audience. Returns HTTP `404`. |
+| `audience` | `required` | `audience` was missing or blank. |
+| `audience` | `not_found` | No audience with that slug exists in the client's organization. |
+| `client` | `required` | `client` was missing or blank. |
+| `client` | `forbidden` | `client` does not match the authenticated client's slug. Returns HTTP `403`. |
+| `tags` | `must_be_list` | `tags` was not a JSON array (PUT only). |
+| `tags` | `must_be_non_empty_strings` | One or more tag entries are not non-empty strings (PUT only). |
+| `tag` | `required` | `tag_slug` path parameter was missing or blank (POST/DELETE only). |
+| `tag` | `invalid` | `tag_slug` path parameter could not be slugified to a non-empty string (POST/DELETE only). |

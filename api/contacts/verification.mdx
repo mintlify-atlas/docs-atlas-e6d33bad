@@ -1,0 +1,136 @@
+---
+title: "PATCH /api/contacts/{id}/verification — Update Verification"
+sidebarTitle: "Verification"
+description: "PATCH /api/contacts/{id}/verification marks a contact as email-verified or unverified. Sets verified_at on both contact and subscription records."
+---
+
+Call this endpoint after your application confirms a contact's email address — for example, after a user clicks a verification link or completes an OTP challenge. Datamailer records the verification timestamp on both the global contact record and the client-scoped subscription, and the change immediately affects `can_send_marketing` eligibility.
+
+## Endpoint
+
+```
+PATCH /api/contacts/{contact_id}/verification
+```
+
+## Authentication
+
+Requires a Bearer token for the client whose slug is passed in the request body.
+
+```
+Authorization: Bearer <client-api-key>
+```
+
+## Path parameters
+
+<ParamField path="contact_id" type="integer" required>
+  The internal Datamailer contact ID. Obtained from a prior upsert or status call.
+</ParamField>
+
+## Request body
+
+<ParamField body="verified" type="boolean" required>
+  Pass `true` to mark the contact as verified. Pass `false` to clear verification, setting `verified_at` to `null` on both the contact and the client subscription.
+</ParamField>
+
+<ParamField body="verified_at" type="string">
+  ISO-8601 timestamp representing when verification occurred. Accepts timezone-aware strings (e.g. `2024-09-01T10:00:00Z`) and naive strings, which are localized to the server's configured timezone. Defaults to the current server time when `verified` is `true` and this field is omitted. Ignored when `verified` is `false`.
+</ParamField>
+
+<ParamField body="audience" type="string" required>
+  Slug of the audience that scopes the subscription to update.
+</ParamField>
+
+<ParamField body="client" type="string" required>
+  Slug of the authenticated client. Must match the bearer token's client.
+</ParamField>
+
+## Behavior
+
+<Steps>
+  <Step title="Locate the contact">
+    The contact is looked up by `contact_id`. A `404` is returned if no contact exists with that ID, or if the contact has no client subscription in the specified audience — preventing one client from mutating contacts it has not onboarded.
+  </Step>
+  <Step title="Update contact-level verified_at">
+    When `verified` is `true`, the contact's global `verified_at` is set to the provided or computed timestamp only if it is not already set. The earliest verification timestamp is always preserved.
+  </Step>
+  <Step title="Update subscription-level verified_at">
+    The client-scoped subscription's `verified_at` is updated to the same timestamp, again preserving any earlier timestamp already on the subscription.
+  </Step>
+  <Step title="Return updated payload">
+    The full contact status payload (including the `tags` array) is returned reflecting the new state.
+  </Step>
+</Steps>
+
+## Example
+
+### Request
+
+```bash
+curl -X PATCH https://datamailer.example.com/api/contacts/42/verification \
+  -H "Authorization: Bearer dm_dtccourses_demo_transactional_email_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "verified": true,
+    "verified_at": "2024-09-01T10:00:00Z",
+    "audience": "dtc-courses",
+    "client": "dtc-courses"
+  }'
+```
+
+### Response
+
+```json
+{
+  "contact_id": 42,
+  "email": "learner@example.com",
+  "exists": true,
+  "verified": true,
+  "verified_at": "2024-09-01T10:00:00Z",
+  "email_validation": {
+    "status": "externally_validated",
+    "reason": "client signup validation",
+    "validated_at": "2024-09-01T10:00:00Z"
+  },
+  "global_unsubscribed": false,
+  "hard_bounced": false,
+  "complained": false,
+  "audience": {
+    "slug": "dtc-courses",
+    "subscribed": false,
+    "status": null,
+    "verified": false,
+    "verified_at": null,
+    "unsubscribed_at": null,
+    "unsubscribe_reason": ""
+  },
+  "client": {
+    "slug": "dtc-courses",
+    "subscribed": true,
+    "status": "subscribed",
+    "verified": true,
+    "verified_at": "2024-09-01T10:00:00Z",
+    "unsubscribed_at": null,
+    "unsubscribe_reason": ""
+  },
+  "can_send_marketing": true,
+  "can_send_transactional": true,
+  "tags": ["course-ml-zoomcamp"]
+}
+```
+
+<Note>
+  **Effect on `can_send_marketing`:** Datamailer evaluates marketing eligibility by checking whether verification has been recorded at the contact level, the audience subscription level, **or** the client subscription level — any one is sufficient. After a successful verification PATCH, `can_send_marketing` will be `true` for this contact in this audience provided the contact is also subscribed and not suppressed.
+</Note>
+
+## Error codes
+
+| Field | Error code | Meaning |
+|---|---|---|
+| `contact_id` | `not_found` | No contact with that ID exists, or the contact has no client subscription in this audience. Returns HTTP `404`. |
+| `verified` | `required` | `verified` was omitted from the request body. |
+| `verified` | `must_be_boolean` | `verified` is not a JSON boolean. |
+| `verified_at` | `must_be_iso_datetime` | `verified_at` was provided but could not be parsed as an ISO-8601 datetime string. |
+| `audience` | `required` | `audience` was missing or blank. |
+| `audience` | `not_found` | No audience with that slug exists in the client's organization. |
+| `client` | `required` | `client` was missing or blank. |
+| `client` | `forbidden` | `client` does not match the authenticated client's slug. Returns HTTP `403`. |

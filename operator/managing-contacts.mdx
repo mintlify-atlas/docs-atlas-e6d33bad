@@ -1,0 +1,114 @@
+---
+title: "Searching, Viewing, and Updating Contacts"
+sidebarTitle: "Contacts"
+description: "Search contacts by email, view subscription state and engagement history, update verification and suppression, and manage per-audience tags."
+---
+
+The contact explorer gives operators a detailed view of every contact in the system — their global suppression state, per-audience subscriptions, email validation status, tag memberships, and a full engagement history. Operators can also make manual adjustments to verification, suppression, subscription status, and tags directly from the UI.
+
+## Searching for Contacts
+
+The contact search page at `/contacts/` supports filtering contacts by a range of criteria. Enter any of the following parameters to narrow results:
+
+| Filter | Description |
+|---|---|
+| `q` | Email address partial match (case-insensitive). |
+| `audience` | Filter to contacts subscribed to a specific audience. |
+| `client` | Filter to contacts subscribed via a specific client. |
+| `include_tags` / `exclude_tags` | Tag slug filters scoped to the selected audience. |
+| `subscription_status` | `pending`, `subscribed`, or `unsubscribed`. |
+| `verified` | `verified` or `unverified`. |
+| `email_validation_status` | Any of the validation status values (see below). |
+| `suppression` | `global_unsubscribed`, `hard_bounced`, or `complained`. |
+| `campaign_status` | Filter by a contact's most recent campaign recipient status. |
+| `skip_reason` | Filter by last campaign skip reason. |
+| `engagement` | `not_opened`, `not_clicked`, `opened_not_clicked`, `never_opened`, `never_clicked`, or `inactive_since`. |
+
+Results are not shown until at least one filter is applied. The results table includes verification badge, validation badge, subscription summary, tag summary, last sent, last opened, and last clicked timestamps, and a recent issue indicator.
+
+## Contact Detail
+
+The contact detail page at `/contacts/{email}/` provides a full view of a single contact identified by their normalised (lowercased) email address.
+
+The page is divided into several sections:
+
+- **Eligibility summary** — per-subscription-scope breakdown of whether marketing and transactional email can be sent, with the specific reasons listed if sending is blocked.
+- **Global state** — verification badge, email validation badge, and suppression badge (globally unsubscribed, hard bounced, or complained).
+- **Sendability** — a consolidated marketing/transactional can-send indicator across all subscription scopes.
+- **Subscriptions** — every audience/client subscription with its status, verified state, and unsubscribe reason.
+- **Tags** — all audience-scoped tag memberships.
+- **Metrics** — last sent, last opened, last clicked, last bounce, last complaint, and last unsubscribe timestamps.
+- **Campaign history** — paginated list of all campaign recipient records with send status, skip reason, and campaign details.
+- **Transactional history** — paginated list of all transactional messages sent to this contact.
+- **Event timeline** — chronological stream of all email events (open, click, bounce, complaint, unsubscribe, etc.).
+- **Audit log** — recent operator actions recorded against this contact.
+
+<Note>
+The event timeline combines campaign recipient events, transactional message events, and raw email events (e.g. SES webhook events) into a single chronological view. Each event shows its type, context (which campaign or template it relates to), and any available metadata such as bounce reason or click URL.
+</Note>
+
+## Updating Contact State
+
+POST to `/contacts/{email}/state/` (the **Update state** form on the contact detail page) to manually set the contact's global fields:
+
+| Field | Options | Effect |
+|---|---|---|
+| `verified_state` | `verified` / `unverified` | Sets or clears `verified_at`. Required for marketing sends. |
+| `email_validation_status` | See validation statuses below | Updates the validation status and clears/sets `email_validated_at`. |
+| `email_validation_reason` | Free text | Human-readable reason stored alongside the validation status. |
+| `global_unsubscribed` | Boolean checkbox | Sets or clears `global_unsubscribed_at`. Blocks all marketing sends. |
+| `hard_bounced` | Boolean checkbox | Sets or clears `hard_bounced_at`. Blocks marketing and transactional sends. |
+| `complained` | Boolean checkbox | Sets or clears `complained_at`. Blocks marketing and transactional sends. |
+
+All state changes are recorded in the operator audit log with the actor's username.
+
+## Email Validation Status Values
+
+The `email_validation_status` field captures the deliverability assessment of a contact's email address:
+
+| Value | Meaning |
+|---|---|
+| `unknown` | No validation has been performed. Default for new contacts. |
+| `valid` | Address passed validation checks. |
+| `invalid_syntax` | Address fails basic format validation. |
+| `no_mx` | Domain has no MX record — email cannot be delivered. |
+| `disposable` | Address belongs to a known disposable email provider. |
+| `risky` | Address is syntactically valid but considered high-risk (e.g. catch-all domain). |
+| `manually_invalid` | An operator has manually marked the address as invalid. |
+| `externally_validated` | Address was validated by an external system (e.g. Mailchimp import for subscribed contacts). |
+
+Contacts with `invalid_syntax`, `no_mx`, `disposable`, or `manually_invalid` statuses are skipped in campaign sends with a skip reason of `invalid_email`.
+
+## Suppression Fields and Sending Eligibility
+
+Three global suppression flags block future sends regardless of subscription status:
+
+| Field | Effect on marketing | Effect on transactional |
+|---|---|---|
+| `global_unsubscribed_at` | Blocked — skip reason `global_unsubscribe` | Allowed |
+| `hard_bounced_at` | Blocked — skip reason `hard_bounce` | Blocked |
+| `complained_at` | Blocked — skip reason `complaint` | Blocked |
+
+Additionally, `verified_at` must be set for a contact to be eligible for marketing sends. Unverified contacts are skipped with reason `unverified`.
+
+## Managing Subscriptions
+
+POST to `/contacts/{email}/subscriptions/` (the **Update subscription** form) to manually adjust a subscription:
+
+| Field | Description |
+|---|---|
+| `audience` | The audience this subscription belongs to. |
+| `client` | Optional client (leave blank for audience-wide subscriptions). |
+| `status` | `pending`, `subscribed`, or `unsubscribed`. |
+| `unsubscribe_reason` | Required when setting status to `unsubscribed`. |
+| `verified` | Whether the subscription should be marked as verified. |
+
+If no subscription exists for the given audience/client combination, one is created.
+
+## Managing Tags
+
+**Add a tag** by POSTing to `/contacts/{email}/tags/add/`. You can either select an existing tag from the audience or supply a new tag name and slug to create one on the fly. If the tag slug already exists in the audience, the existing tag is used rather than creating a duplicate.
+
+**Remove a tag** by POSTing to `/contacts/{email}/tags/remove/` with the tag membership to remove. Only tags currently held by this contact are selectable in the remove form.
+
+Both add and remove actions are logged in the operator audit log with the audience slug and tag slug.

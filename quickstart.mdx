@@ -1,47 +1,131 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with Datamailer Locally"
+sidebarTitle: "Quickstart"
+description: "Set up Datamailer locally in under 5 minutes. Install dependencies, run migrations, seed demo data, and make your first API call."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+This guide walks you through cloning the Datamailer repository, installing dependencies, running the development server, and making your first authenticated API call — all against a local SQLite database with no AWS account required. The full SQS and SES send path can be exercised later through LocalStack once you're comfortable with the basics.
 
 ## Prerequisites
 
-Before you begin, you must have:
+Before you begin, ensure you have the following installed:
 
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
+- **Python 3.12 or later** — Datamailer's `pyproject.toml` sets `requires-python = ">=3.12"`.
+- **[uv](https://docs.astral.sh/uv/)** — the package manager used to install dependencies and run management commands. Install it with `curl -LsSf https://astral.sh/uv/install.sh | sh` or see the uv docs for your platform.
+- **Docker** *(optional)* — only needed if you want to run LocalStack to emulate AWS SQS and SES locally. The quickstart below does not require it.
 
-## Get started
+## Setup Steps
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Clone the repository">
+    Clone the Datamailer source repository and change into the project directory:
 
     ```bash
-    npm install your-package
+    git clone https://github.com/DataTalksClub/datamailer.git
+    cd datamailer
     ```
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+
+  <Step title="Run make setup">
+    The `setup` target copies the example environment file, installs Python dependencies with `uv sync`, and runs database migrations in one step:
 
     ```bash
-    your-cli init
+    make setup
     ```
+
+    Under the hood this runs:
+
+    ```bash
+    cp .env.example .env   # only if .env does not already exist
+    uv sync
+    uv run python manage.py migrate
+    ```
+
+    The default `.env` configures a local SQLite database and the Django console email backend, so no external services are needed at this stage.
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+
+  <Step title="Seed demo data">
+    Populate your local database with organisations, audiences, clients, contacts, campaigns, transactional message history, and engagement events:
 
     ```bash
-    your-cli start
+    uv run python manage.py seed_demo_data
     ```
+
+    The command is **idempotent** — run it again after future migrations to refresh the demo data without duplicating records. It does not enqueue any SQS work or call SES.
+
+    <Note>
+      `seed_demo_data` requires `DEBUG=True` and will refuse to run in a production environment where `DEBUG=False`.
+    </Note>
+  </Step>
+
+  <Step title="Start the development server">
+    ```bash
+    make run
+    ```
+
+    This runs `uv run python manage.py runserver`. The server starts on `http://localhost:8000` by default.
+  </Step>
+
+  <Step title="Log in to the operator UI">
+    Open `http://localhost:8000/admin/login/` in your browser and sign in with the demo admin credentials:
+
+    | Field    | Value   |
+    | -------- | ------- |
+    | Username | `admin` |
+    | Password | `admin` |
+
+    The product UI uses Django staff authentication, so unauthenticated users are redirected to `/admin/login/` automatically. Once logged in you can browse audiences, contacts, campaigns, and client/API key management.
+
+    <Tip>
+      Staff users can view transactional template keys and their required context fields at `/templates/`.
+    </Tip>
+  </Step>
+
+  <Step title="Explore the interactive API reference">
+    Navigate to `http://localhost:8000/api-docs/` to open the interactive OpenAPI reference. It includes copy-pasteable local `curl` examples, request/response bodies, common errors, and the full endpoint listing. The raw OpenAPI JSON is also available at `/api-docs/openapi.json`.
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## Demo API Keys
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+The `seed_demo_data` command creates three stable API keys that map to the seeded client applications. Use these keys in local `curl` examples or when exploring the API docs:
+
+| Client | Integration Name | API Key |
+| ------ | ---------------- | ------- |
+| `dtc-courses` | Course platform transactional | `dm_dtccourses_demo_transactional_email_key` |
+| `dtc-newsletter` | Newsletter import/export | `dm_dtcnews_demo_newsletter_import_export_key` |
+| `asl-platform` | ASL platform transactional | `dm_aslplatform_demo_transactional_email_key` |
+
+All client API endpoints under `/api/...` require a `Bearer` token in the `Authorization` header. Datamailer stores only a hash of each key and displays its safe `dm_<prefix>` identifier for support and audit trails.
+
+<Info>
+  These keys are seeded for **local development only**. In production you create named API keys from the client detail page in the operator UI. The raw key is shown once on creation and must be stored by the client application immediately.
+</Info>
+
+## Your First API Call
+
+The `/api/contacts/status` endpoint is a good starting point — it returns a contact's subscription, verification, validation, suppression, and sendability state for a given audience and client scope, and it requires no write permissions.
+
+```bash
+curl http://localhost:8000/api/contacts/status \
+  -H "Authorization: Bearer dm_dtccourses_demo_transactional_email_key" \
+  -G --data-urlencode "email=learner@example.com" \
+     --data-urlencode "audience=dtc-courses" \
+     --data-urlencode "client=dtc-courses"
+```
+
+If the contact does not exist yet in your local seed data the endpoint will return a not-found response, which is expected — try substituting one of the seeded contact emails such as `alex.verified@example.com`:
+
+```bash
+curl http://localhost:8000/api/contacts/status \
+  -H "Authorization: Bearer dm_dtccourses_demo_transactional_email_key" \
+  -G --data-urlencode "email=alex.verified@example.com" \
+     --data-urlencode "audience=dtc-courses" \
+     --data-urlencode "client=dtc-courses"
+```
+
+For the full API reference — including contact upsert, subscription management, CSV import/export, transactional sends, and contact history — see the interactive docs at `/api-docs/` once your server is running.
+
+## Next Steps
+
+Your local Datamailer instance is now running with demo data and a working API. When you're ready to move toward a production deployment, see the [Configuration reference](/configuration) for a complete guide to all environment variables, including how to wire up Postgres, SES, and SQS.

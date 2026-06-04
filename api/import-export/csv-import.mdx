@@ -1,0 +1,188 @@
+---
+title: "POST /api/contacts/imports/csv — Bulk CSV Contact Import"
+sidebarTitle: "CSV Import"
+description: "POST /api/contacts/imports/csv imports contacts from a CSV file upload. Idempotent by normalized email. Returns import counts and per-row error details."
+---
+
+`POST /api/contacts/imports/csv` accepts a UTF-8 CSV file and imports each row as a contact upsert. The endpoint uses the same idempotency and partial-error logic as the JSON import: valid rows are committed regardless of which other rows fail, and re-uploading the same file is safe. The CSV must include an `email` header column; all other supported columns are optional and can be omitted entirely.
+
+## Authentication
+
+All requests must include a Bearer token issued for the target client.
+
+```
+Authorization: Bearer <client-api-key>
+```
+
+## Request
+
+**Method and path:** `POST /api/contacts/imports/csv`
+
+**Content-Type:** `multipart/form-data`
+
+Upload the file using the `file` form field. The `audience` and `client` slugs can be provided as additional form fields (or as columns in the CSV itself).
+
+### Form Fields
+
+<ParamField body="file" type="file" required>
+  The CSV file to import. Must be UTF-8 or UTF-8 with BOM. The first row must
+  be a header row containing at least the `email` column.
+</ParamField>
+
+<ParamField body="audience" type="string">
+  Default audience slug applied to all rows that do not have an `audience`
+  column, or whose `audience` column is empty.
+</ParamField>
+
+<ParamField body="client" type="string">
+  Default client slug applied to all rows that do not have a `client` column,
+  or whose `client` column is empty.
+</ParamField>
+
+<ParamField body="dry_run" type="string">
+  Set to `true` to validate all rows and return projected counts without
+  writing any data. Accepts `true`, `1`, `yes`. Defaults to `false`.
+</ParamField>
+
+## Supported CSV Columns
+
+The following column names are recognized. Any column not in this list causes
+the entire file to be rejected before processing begins.
+
+| Column | Type | Notes |
+|---|---|---|
+| `email` | string | **Required.** Contact email address. |
+| `tags` | string | Semicolon-separated tag names, e.g. `course-ml-zoomcamp;course-de-zoomcamp`. |
+| `status` | string | Subscription status: `pending`, `subscribed`, or `unsubscribed`. Also accepted as `subscription_status`. |
+| `verified` | boolean | See boolean values below. |
+| `global_unsubscribed` | boolean | Sets `global_unsubscribed_at` if `true`. |
+| `hard_bounced` | boolean | Sets `hard_bounced_at` if `true`. |
+| `complained` | boolean | Sets `complained_at` if `true`. |
+| `email_validation_status` | string | One of `unknown`, `valid`, `invalid_syntax`, `no_mx`, `disposable`, `risky`, `manually_invalid`, `externally_validated`. |
+| `email_validation_reason` | string | Free-text reason stored alongside the validation status. |
+| `unsubscribe_reason` | string | Stored as the unsubscribe reason when status is `unsubscribed`. |
+
+### Boolean Column Values
+
+Boolean columns accept the following values (case-insensitive):
+
+- **True:** `true`, `yes`, `1`, `y`, `on`
+- **False:** `false`, `no`, `0`, `n`, `off`, or empty string
+
+### Tags Format
+
+Provide multiple tags as a semicolon-delimited list within a single cell:
+
+```
+course-ml-zoomcamp;course-de-zoomcamp;mlops-zoomcamp
+```
+
+Tags are slugified and created automatically if they do not already exist in the audience.
+
+## Deduplication
+
+Within a single uploaded file, the first valid row for a given normalized email wins. Later rows with the same normalized email are skipped and reported as duplicate rows. Emails are normalized by lowercasing before comparison.
+
+## Response
+
+HTTP `200 OK`. The response shape is identical to the JSON import response.
+
+<ResponseField name="dry_run" type="boolean">
+  Echoes the `dry_run` flag.
+</ResponseField>
+
+<ResponseField name="counts" type="object">
+  <Expandable title="count fields">
+    <ResponseField name="total" type="integer">Total rows parsed from the CSV (excluding the header).</ResponseField>
+    <ResponseField name="created" type="integer">Rows that resulted in a new contact or subscription.</ResponseField>
+    <ResponseField name="updated" type="integer">Rows that modified an existing record.</ResponseField>
+    <ResponseField name="unchanged" type="integer">Rows that matched existing records with no changes needed.</ResponseField>
+    <ResponseField name="skipped" type="integer">Rows skipped due to in-file email duplication.</ResponseField>
+    <ResponseField name="invalid" type="integer">Rows that failed validation and were not imported.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="results" type="object[]">
+  Per-row result entries for all successfully processed rows.
+</ResponseField>
+
+<ResponseField name="errors" type="object[]">
+  Per-row error entries for rows that failed validation.
+
+  <Expandable title="error item fields">
+    <ResponseField name="index" type="integer">Zero-based row index (excluding the header row).</ResponseField>
+    <ResponseField name="item" type="integer">One-based item number for display.</ResponseField>
+    <ResponseField name="email" type="string">Normalized email if parseable, otherwise empty.</ResponseField>
+    <ResponseField name="errors" type="object">Map of field name to error code.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Example
+
+### CSV File (`contacts.csv`)
+
+```csv
+email,tags,status,verified,global_unsubscribed
+learner@example.com,course-ml-zoomcamp;course-de-zoomcamp,subscribed,true,false
+student@example.com,course-de-zoomcamp,subscribed,false,false
+bounced@example.com,,pending,false,false
+```
+
+### Request
+
+```bash
+curl -X POST https://datamailer.example.com/api/contacts/imports/csv \
+  -H "Authorization: Bearer dm_dtcnews_demo_newsletter_import_export_key" \
+  -F "file=@contacts.csv" \
+  -F "audience=dtc-courses" \
+  -F "client=dtc-courses"
+```
+
+### Response
+
+```json
+{
+  "dry_run": false,
+  "idempotency_key": "",
+  "counts": {
+    "total": 3,
+    "created": 2,
+    "updated": 1,
+    "unchanged": 0,
+    "skipped": 0,
+    "invalid": 0
+  },
+  "results": [
+    {
+      "index": 0,
+      "item": 1,
+      "email": "learner@example.com",
+      "action": "updated",
+      "contact": { "contact_id": 42, "email": "learner@example.com" }
+    },
+    {
+      "index": 1,
+      "item": 2,
+      "email": "student@example.com",
+      "action": "created",
+      "contact": { "contact_id": 43, "email": "student@example.com" }
+    },
+    {
+      "index": 2,
+      "item": 3,
+      "email": "bounced@example.com",
+      "action": "created",
+      "contact": { "contact_id": 44, "email": "bounced@example.com" }
+    }
+  ],
+  "errors": []
+}
+```
+
+<Note>
+  `audience` and `client` can be provided either as form fields (shown above) or
+  as columns within the CSV itself. If a row includes both a CSV column value and
+  a form field default, the CSV column takes precedence for that row. The
+  authenticated client slug must always match — rows referencing a different
+  client return a `forbidden` validation error.
+</Note>

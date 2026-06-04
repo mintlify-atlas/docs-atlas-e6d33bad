@@ -1,0 +1,231 @@
+---
+title: "SQS Worker Queue Message Contracts"
+sidebarTitle: "Worker Contracts"
+description: "Versioned SQS message schemas for the transactional-email, campaign-email, ses-webhooks, and email-events Lambda worker queues in Datamailer."
+---
+
+Datamailer uses SQS as the durable boundary between Django and Lambda. All queue messages are envelopes with a `contract` name (string) and an integer `version`. Version `1` is the only supported contract version. Workers must load mutable state from Postgres before sending, skipping, updating status, or appending events — the payload carries stable identifiers and routing context only, never mutable state.
+
+<Warning>
+  SQS is **at-least-once delivery**. Duplicate messages are expected and must be harmless. Every handler must be idempotent: a duplicate message must either no-op or converge on the same database state. Malformed JSON, missing required fields, unknown contract names, and unsupported version numbers fail only the affected SQS record; valid records in the same batch are acknowledged normally.
+</Warning>
+
+## Lambda Handler Shape
+
+All worker handlers accept AWS SQS-shaped Lambda events and return the partial batch response format. Failed records are identified by `messageId`; records omitted from `batchItemFailures` are considered successfully processed and deleted from the queue.
+
+**Event input:**
+
+```json
+{
+  "Records": [
+    {
+      "messageId": "message-1",
+      "body": "{\"contract\":\"transactional-email\",\"version\":1}"
+    }
+  ]
+}
+```
+
+**Response output:**
+
+```json
+{
+  "batchItemFailures": [
+    {"itemIdentifier": "message-id-to-retry"}
+  ]
+}
+```
+
+## Queue Isolation
+
+Transactional and campaign work use separate queues and workers so campaign backlog cannot delay account-critical email.
+
+| Queue | Purpose | Lambda Handler |
+|---|---|---|
+| `transactional-email` | High-priority account, verification, password reset, and product emails | `transactional_email_handler` |
+| `campaign-email` | Campaign recipient batch send jobs | `campaign_email_handler` |
+| `ses-webhooks` | Asynchronous SES provider event notifications | `ses_webhooks_handler` |
+| `email-events` | First-party tracking event ingest (open, click, unsubscribe) | `email_events_handler` |
+
+---
+
+## `transactional-email` v1
+
+**Purpose:** send one pre-created `transactional_messages` row through SES. The worker loads the row from Postgres, checks the `(client_id, idempotency_key)` pair, and skips the SES call if the message is already in a terminal state.
+
+### Required Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `contract` | string | Must be `"transactional-email"`. |
+| `version` | integer | Must be `1`. |
+| `transactional_message_id` | positive integer | Primary key of the source-of-truth row in `transactional_messages`. |
+| `client_id` | positive integer | Client scope for authorization and idempotency. |
+| `idempotency_key` | string | Stable client/request key. Expected to be unique within `client_id`. |
+
+### Optional Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `contact_id` | positive integer | Routing hint; the worker still loads the full message row from Postgres. |
+| `template_id` | positive integer | Routing hint for the associated template. |
+| `template_key` | string | Diagnostic hint for log readability (e.g. `"password-reset"`). |
+| `metadata` | object | Non-authoritative trace IDs or diagnostics (e.g. `{"trace_id": "..."}`). |
+
+### Example
+
+```json
+{
+  "contract": "transactional-email",
+  "version": 1,
+  "transactional_message_id": 101,
+  "client_id": 7,
+  "contact_id": 22,
+  "template_id": 4,
+  "template_key": "password-reset",
+  "idempotency_key": "client-7:password-reset:req-123",
+  "metadata": {"trace_id": "trace-1"}
+}
+```
+
+### Idempotency
+
+The worker must load the `transactional_messages` row, check `(client_id, idempotency_key)`, and acknowledge already-sent or already-skipped terminal states without making another SES API call. The `idempotency_key` must be stable across retries for the same logical send request.
+
+---
+
+## `campaign-email` v1
+
+**Purpose:** send a bounded batch of previously snapshotted `campaign_recipients` rows. The worker loads each row from Postgres, checks eligibility, and only sends rows that are still in a sendable state.
+
+### Required Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `contract` | string | Must be `"campaign-email"`. |
+| `version` | integer | Must be `1`. |
+| `campaign_id` | positive integer | Primary key of the source campaign. |
+| `batch_id` | string | Stable scheduler-generated batch identifier (e.g. `"campaign-55-batch-0001"`). |
+| `campaign_recipient_ids` | non-empty array of positive integers | Primary keys of `campaign_recipients` rows to load and process. |
+
+### Optional Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `idempotency_key` | string | Recommended value: same as `batch_id`. |
+| `metadata` | object | Trace IDs or scheduler diagnostics. |
+
+### Example
+
+```json
+{
+  "contract": "campaign-email",
+  "version": 1,
+  "campaign_id": 55,
+  "batch_id": "campaign-55-batch-0001",
+  "campaign_recipient_ids": [501, 502],
+  "idempotency_key": "campaign-55-batch-0001",
+  "metadata": {"source": "scheduler"}
+}
+```
+
+### Idempotency
+
+The worker must load each `campaign_recipients` row from Postgres and only send rows that are still eligible. Rows already in a terminal state — `sent`, `skipped`, `bounced`, `complained`, or any other terminal status — must be acknowledged without another SES call. This prevents duplicate sends when a message is redelivered due to a previous Lambda timeout or partial batch failure.
+
+---
+
+## `ses-webhooks` v1
+
+**Purpose:** process SES delivery, bounce, complaint, open, click, send, or reject notifications asynchronously. SES configuration-set events are routed through SNS and delivered directly to the `ses-webhooks` SQS queue; the worker receives raw SNS `Notification` envelopes and normalizes them into this contract before processing. The optional HTTP SES/SNS webhook endpoint performs the same normalization and enqueues this contract payload — both ingress paths converge on the same processor.
+
+### Required Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `contract` | string | Must be `"ses-webhooks"`. |
+| `version` | integer | Must be `1`. |
+| `provider` | string | Must be `"ses"`. |
+| `provider_event_id` | string | Stable SNS/SES notification ID used for deduplication. |
+| `notification_type` | string | One of `send`, `reject`, `delivery`, `bounce`, `complaint`, `open`, `click`. |
+| `received_at` | string | ISO-8601 timestamp recorded by the Datamailer ingress layer. |
+
+### Optional Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `ses_message_id` | string | SES message ID for correlating back to `campaign_recipients` or `transactional_messages`. |
+| `mail_message_id` | string | Provider mail object ID when distinct from `ses_message_id`. |
+| `raw_payload_s3_key` | string | S3 pointer to the archived raw provider payload, if stored. |
+| `metadata` | object | Non-authoritative provider details (e.g. `{"mail_timestamp": "..."}`). |
+
+### Example
+
+```json
+{
+  "contract": "ses-webhooks",
+  "version": 1,
+  "provider": "ses",
+  "provider_event_id": "sns-message-123",
+  "notification_type": "bounce",
+  "received_at": "2026-05-24T12:00:00Z",
+  "ses_message_id": "ses-message-123",
+  "metadata": {"mail_timestamp": "2026-05-24T11:59:59Z"}
+}
+```
+
+### Idempotency
+
+The worker must deduplicate by `provider_event_id` when present and correlate `ses_message_id` to `campaign_recipients` or `transactional_messages` before appending `email_events` or updating summary columns.
+
+---
+
+## `email-events` v1
+
+**Purpose:** ingest first-party tracking events such as opens, clicks, and unsubscribes generated by Datamailer's own tracking endpoints. The worker uses the `idempotency_key` to avoid double-counting unique events while keeping `email_events` append-only for auditable history.
+
+### Required Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `contract` | string | Must be `"email-events"`. |
+| `version` | integer | Must be `1`. |
+| `event_id` | string | Edge-generated event identifier. |
+| `event_type` | string | One of `open`, `click`, `unsubscribe`. |
+| `occurred_at` | string | ISO-8601 event timestamp. |
+| `idempotency_key` | string | Stable key for deduplicating tracking requests (e.g. `"open:token:2026-05-24T12:00:01Z"`). |
+
+### Optional Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `campaign_id` | positive integer | Campaign context if known at ingest time. |
+| `campaign_recipient_id` | positive integer | Preferred campaign recipient source row. |
+| `transactional_message_id` | positive integer | Transactional source row if applicable. |
+| `contact_id` | positive integer | Contact context if already resolved. |
+| `client_id` | positive integer | Client context if already resolved. |
+| `audience_id` | positive integer | Audience context if already resolved. |
+| `tracking_token` | string | Token used to load source-of-truth state from Postgres. |
+| `url` | string | Click target URL for `click` events. |
+| `metadata` | object | Request diagnostics such as user agent or IP hash. |
+
+### Example
+
+```json
+{
+  "contract": "email-events",
+  "version": 1,
+  "event_id": "track-open-123",
+  "event_type": "open",
+  "occurred_at": "2026-05-24T12:00:01Z",
+  "idempotency_key": "open:tracking-token-123:2026-05-24T12:00:01Z",
+  "campaign_recipient_id": 501,
+  "tracking_token": "tracking-token-123",
+  "metadata": {"user_agent": "Mozilla/5.0"}
+}
+```
+
+### Idempotency
+
+The worker may append duplicate raw `email_events` rows when product policy allows it, but summary fields — first open timestamp, unique click flag, unsubscribe state — must use `idempotency_key`, `tracking_token`, and row IDs to avoid double-counting unique events. Total counts and unique counts must be tracked separately.

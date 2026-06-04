@@ -1,0 +1,99 @@
+---
+title: "Creating and Sending Email Campaigns"
+sidebarTitle: "Campaigns"
+description: "Create draft campaigns, configure recipient filters with include/exclude tags, queue campaigns for send, and monitor delivery stats."
+---
+
+Campaigns are bulk email sends targeted at a specific audience and client. Once created as a draft, a campaign moves through a series of statuses as it is queued, snapshotted, and sent. The campaign detail page provides live delivery statistics throughout the lifecycle and lets you filter the recipient list by engagement outcome.
+
+## Creating a Campaign
+
+Navigate to `/campaigns/new/` to open the campaign creation form. All campaigns start in `draft` status and can be edited freely until queued.
+
+| Field | Notes |
+|---|---|
+| `subject` | Email subject line, up to 255 characters. |
+| `preview_text` | Optional preview/preheader text shown in inbox previews. |
+| `html_body` | Full HTML email body. |
+| `text_body` | Plain-text fallback body. |
+| `client` | The client whose audience scope and API context applies to this campaign. |
+| `audience` | The audience whose subscribed contacts are the potential recipients. |
+| `include_tags` | Tags a contact **must have at least one of** to be included. Leave empty to include all subscribed contacts. |
+| `exclude_tags` | Tags a contact **must have none of** to be included. Takes precedence over include rules. |
+| `scheduled_at` | Optional intended send time stored for reference; does not auto-trigger the send. |
+
+Edit an existing draft at `/campaigns/{id}/edit/`. Once a campaign is queued, editing is disabled.
+
+## Campaign Statuses
+
+A campaign moves through the following statuses in order:
+
+| Status | Meaning |
+|---|---|
+| `draft` | Being composed. Fully editable. Recipient estimate shown on detail page. |
+| `queued` | Queued for snapshotting. No further edits allowed. |
+| `snapshotting` | Recipient list is being computed and persisted. |
+| `sending` | Individual send batches are being dispatched via SES. |
+| `sent` | All batches dispatched. Final stats available. |
+| `cancelled` | Manually cancelled before completion. |
+| `failed` | An unrecoverable error occurred during send. |
+
+## Full Campaign Workflow
+
+<Steps>
+  <Step title="Create a draft">
+    Go to `/campaigns/new/`, fill in subject, body, client, audience, and any tag filters. Save to create a `draft` campaign. The campaign detail page at `/campaigns/{id}/` shows a live estimate of eligible recipients.
+  </Step>
+  <Step title="Review the draft">
+    Visit `/campaigns/{id}/` to review the campaign content and the estimated recipient count. The estimate reflects current subscriptions and tag memberships. Adjust include/exclude tags and return to edit if needed.
+  </Step>
+  <Step title="Queue the campaign">
+    Click **Queue** on the campaign detail page or POST to `/campaigns/{id}/queue/`. This triggers an atomic recipient snapshot followed by batch dispatch. The UI confirms the recipient count, skipped count, and batch count.
+  </Step>
+  <Step title="Monitor sending">
+    Refresh `/campaigns/{id}/` during the `snapshotting` and `sending` phases to watch live counters update. Use the recipient filter tabs to drill into specific outcome groups.
+  </Step>
+  <Step title="Review final stats">
+    Once the campaign reaches `sent`, all stats are final. Review open rate, click rate, bounce count, and unsubscribe count on the detail page.
+  </Step>
+</Steps>
+
+## Tag-Based Recipient Filtering
+
+Include and exclude tags let you precisely control which subscribed contacts receive a campaign.
+
+- **`include_tags`** — A contact must hold **at least one** of the listed tags. Leave empty to target all subscribed contacts in the audience.
+- **`exclude_tags`** — A contact must have **none** of the listed tags. Exclusion is evaluated after inclusion, so an excluded contact is always skipped even if they satisfy include conditions.
+
+Tags are stored as slugified strings. The campaign model normalises tag lists automatically when saved.
+
+## Campaign Detail and Delivery Stats
+
+The campaign detail page at `/campaigns/{id}/` shows the following counters, updated as events arrive:
+
+| Stat | Description |
+|---|---|
+| `recipient_count` | Total contacts snapshotted as recipients. |
+| `sent_count` | Recipients where a send attempt was made. |
+| `skipped_count` | Recipients skipped at send time due to suppression or ineligibility. |
+| `delivered_count` | Confirmed deliveries via SES delivery notification. |
+| `unique_open_count` | Recipients who opened the email at least once. |
+| `open_count` | Total open events recorded (includes repeat opens). |
+| `unique_click_count` | Recipients who clicked at least one link. |
+| `click_count` | Total click events recorded. |
+| `unsubscribe_count` | Recipients who unsubscribed via the email link. |
+| `bounce_count` | Hard bounce events received from SES. |
+| `complaint_count` | Spam complaint events received from SES. |
+
+**Derived rates** displayed in the UI:
+
+- **Open rate** = `unique_open_count / sent_count`
+- **Click rate** = `unique_click_count / sent_count`
+- **Unsubscribe rate** = `unsubscribe_count / sent_count`
+- **Bounce rate** = `bounce_count / sent_count`
+
+The recipient table supports the following filter tabs: `opened`, `clicked`, `not_opened`, `bounced`, `unsubscribed`, `complained`, `skipped`, `failed`, `sent`, `pending`.
+
+<Note>
+Skipped recipients are contacts who were part of the audience snapshot but were ineligible to receive the email at send time. Skip reasons include: `unverified` (contact has no `verified_at`), `invalid_email` (validation status blocks sending), `global_unsubscribe`, `client_unsubscribe`, `audience_unsubscribe`, `hard_bounce`, `complaint`, `duplicate`, and `suppressed`. Skipped counts are reported in the queue confirmation message and displayed on the detail page.
+</Note>

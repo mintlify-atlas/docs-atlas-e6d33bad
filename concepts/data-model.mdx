@@ -1,0 +1,101 @@
+---
+title: "Datamailer Data Model: Contacts, Audiences, and Campaigns"
+sidebarTitle: "Data Model"
+description: "How Datamailer structures organizations, audiences, clients, contacts, subscriptions, campaigns, and email events in a Postgres database."
+---
+
+Datamailer keeps a strict separation between **global contact identity** and **per-audience subscription state**. A single email address is represented by exactly one `Contact` row, but that contact can carry independent subscription preferences for every audience and client that uses Datamailer. This means DataTalksClub and AI Shipping Labs can share the same underlying contact database while keeping their mailing lists and engagement history completely separate.
+
+## Entity Hierarchy
+
+```
+Organization
+├── Audience (brand-level list)
+│   ├── Tag (audience-scoped label)
+│   └── Campaign
+│       ├── CampaignRecipient  (one row per intended recipient)
+│       │   └── EmailEvent     (append-only timeline)
+│       └── EmailEvent
+└── Client (application or product)
+    ├── Subscription           (contact × audience × client)
+    ├── EmailTemplate
+    └── TransactionalMessage
+            └── EmailEvent
+
+Contact (global identity)
+├── Subscription  (→ Audience + Client)
+├── ContactTag    (→ Tag)
+├── CampaignRecipient
+└── TransactionalMessage
+```
+
+---
+
+## Core Entities
+
+### Identity and Tenancy
+
+| Entity | Key Fields | Purpose |
+|---|---|---|
+| `Organization` | `slug`, `name` | Top-level owner; groups audiences and clients (e.g., `datatalksclub`) |
+| `Audience` | `organization`, `slug` | Brand-level mailing list (e.g., `datatalks-club`) |
+| `Client` | `organization`, `slug`, `is_active` | Application or product sending email (e.g., `dtc-newsletter`) |
+| `ClientApiKey` | `client`, `key_hash`, `public_id`, `revoked_at` | Named Bearer credentials; only the hash is stored |
+
+### Contacts and Subscriptions
+
+| Entity | Key Fields | Purpose |
+|---|---|---|
+| `Contact` | `email`, `normalized_email`, `verified_at`, `global_unsubscribed_at`, `hard_bounced_at`, `complained_at` | Global email identity; unique on `normalized_email` |
+| `Subscription` | `contact`, `audience`, `client`, `status`, `verified_at`, `unsubscribed_at` | Per-audience/client opt-in state; unique on `(contact, audience, client)` |
+| `Tag` | `audience`, `name`, `slug` | Audience-scoped label; unique on `(audience, slug)` |
+| `ContactTag` | `contact`, `tag` | Many-to-many membership; unique on `(contact, tag)` |
+
+---
+
+## Campaign Entities
+
+| Entity | Key Fields | Purpose |
+|---|---|---|
+| `Campaign` | `client`, `audience`, `subject`, `html_body`, `status`, `include_tags`, `exclude_tags` | Campaign definition plus aggregate engagement counters |
+| `CampaignRecipient` | `campaign`, `contact`, `status`, `skip_reason`, `tracking_token_hash`, `unsubscribe_token_hash` | One row per intended recipient; unique on `(campaign, contact)` |
+| `EmailEvent` | `event_type`, `campaign_recipient`, `transactional_message`, `contact`, `created_at` | Append-only event timeline shared by campaigns and transactional sends |
+
+---
+
+## Transactional Entities
+
+| Entity | Key Fields | Purpose |
+|---|---|---|
+| `EmailTemplate` | `client`, `key`, `subject`, `html_body`, `text_body`, `is_transactional` | Reusable template; unique on `(client, key)` |
+| `TransactionalMessage` | `client`, `contact`, `template_key`, `idempotency_key`, `status` | One row per transactional send request; unique on `(client, idempotency_key)` when key is present |
+
+---
+
+## Key Design Decisions
+
+<CardGroup cols={3}>
+  <Card title="Global Identity, Scoped Subscriptions" icon="id-card">
+    One `Contact` row per email address across the entire system. Subscription state is scoped to `(contact, audience, client)`, so the same person can be subscribed to the newsletter and unsubscribed from courses independently.
+  </Card>
+  <Card title="Append-Only Event Log" icon="list-timeline">
+    `EmailEvent` rows are never updated or deleted. Every open, click, bounce, complaint, and unsubscribe is a new row. This makes the contact timeline auditable and supports future partitioning or S3 archival as volume grows.
+  </Card>
+  <Card title="Recipient Snapshots" icon="camera">
+    When a campaign is sent, one `CampaignRecipient` row is created for every intended contact — including those who will be skipped. A 120k-recipient campaign produces 120k rows, giving full auditability for every send/no-send decision.
+  </Card>
+</CardGroup>
+
+---
+
+## Key Constraints
+
+| Constraint | Table | Rule |
+|---|---|---|
+| Unique `normalized_email` | `contacts` | No two contacts share the same casefolded email |
+| Unique `(contact, audience, client)` | `subscriptions` | One subscription record per scope |
+| Unique `(audience, slug)` | `tags` | Tag slugs are unique within an audience |
+| Unique `tracking_token_hash` | `campaign_recipients` | Each open-pixel token maps to exactly one recipient |
+| Unique `unsubscribe_token_hash` | `campaign_recipients` | Each unsubscribe token maps to exactly one recipient |
+| Unique `(client, idempotency_key)` | `transactional_messages` | Idempotency enforced at the database layer (when key is non-empty) |
+| Unique `provider_event_id` | `email_events` | SES webhook events are deduplicated by provider event ID |

@@ -1,0 +1,203 @@
+---
+title: "PATCH /api/contacts/{id}/suppression — Update Suppression State"
+sidebarTitle: "Suppression"
+description: "PATCH /api/contacts/{id}/suppression sets or clears global_unsubscribed, hard_bounced, and complained suppression flags. Appends email events on change."
+---
+
+Suppression is Datamailer's mechanism for permanently blocking email to a contact. When a suppression flag is set, the contact is removed from all future marketing sends and — for hard bounces and complaints — transactional sends too. Every suppression change that activates a flag is recorded as an immutable `EmailEvent`, giving you a complete audit trail of why a contact stopped receiving email.
+
+This page also covers the related `PATCH /api/contacts/{contact_id}/validation` endpoint, which stores external email hygiene decisions from validation providers.
+
+<Warning>
+  `hard_bounced` and `complained` suppress **both** marketing and transactional sends. Once set, these flags block all outbound email to the address regardless of subscription status or verification. Clear them only after confirming the address is deliverable again.
+</Warning>
+
+---
+
+## PATCH /api/contacts/{contact_id}/suppression
+
+Sets or clears one or more global suppression flags on a contact. Only the fields you include are modified — omitted flags are left unchanged.
+
+```
+PATCH /api/contacts/{contact_id}/suppression
+```
+
+### Authentication
+
+Requires a Bearer token for the client whose slug is passed in the request body.
+
+```
+Authorization: Bearer <client-api-key>
+```
+
+### Path parameters
+
+<ParamField path="contact_id" type="integer" required>
+  The internal Datamailer contact ID.
+</ParamField>
+
+### Request body
+
+<ParamField body="global_unsubscribed" type="boolean">
+  Pass `true` to set `global_unsubscribed_at` to the current time, marking the contact as globally opted out of marketing. Pass `false` to clear the flag. Omit the field to leave it unchanged.
+</ParamField>
+
+<ParamField body="hard_bounced" type="boolean">
+  Pass `true` to set `hard_bounced_at` to the current time. Pass `false` to clear. Omit to leave unchanged.
+</ParamField>
+
+<ParamField body="complained" type="boolean">
+  Pass `true` to set `complained_at` to the current time. Pass `false` to clear. Omit to leave unchanged.
+</ParamField>
+
+<ParamField body="reason" type="string">
+  Free-text reason stored in the `metadata` of any `EmailEvent` records created by this call. Useful for recording the source (e.g. `"ses-bounce"`, `"user-request"`). Defaults to an empty string.
+</ParamField>
+
+<ParamField body="audience" type="string" required>
+  Slug of the audience used to scope the contact lookup and event creation.
+</ParamField>
+
+<ParamField body="client" type="string" required>
+  Slug of the authenticated client. Must match the bearer token's client.
+</ParamField>
+
+### Side effects
+
+When a suppression flag transitions from unset to set, Datamailer appends an `EmailEvent` record for audit purposes:
+
+| Flag set | Event type recorded |
+|---|---|
+| `global_unsubscribed` | `unsubscribe` |
+| `hard_bounced` | `bounce` |
+| `complained` | `complaint` |
+
+Events are only created when the state changes and the new value is `true`. Clearing a flag does not create an event. Already-set flags that you pass `true` to again are not double-recorded.
+
+### Example
+
+```bash
+curl -X PATCH https://datamailer.example.com/api/contacts/42/suppression \
+  -H "Authorization: Bearer dm_dtccourses_demo_transactional_email_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "hard_bounced": true,
+    "reason": "ses-permanent-bounce",
+    "audience": "dtc-courses",
+    "client": "dtc-courses"
+  }'
+```
+
+### Response
+
+```json
+{
+  "contact_id": 42,
+  "email": "learner@example.com",
+  "exists": true,
+  "verified": true,
+  "verified_at": "2024-09-01T10:00:00Z",
+  "email_validation": {
+    "status": "externally_validated",
+    "reason": "client signup validation",
+    "validated_at": "2024-09-01T10:00:00Z"
+  },
+  "global_unsubscribed": false,
+  "hard_bounced": true,
+  "complained": false,
+  "audience": {
+    "slug": "dtc-courses",
+    "subscribed": false,
+    "status": null,
+    "verified": false,
+    "verified_at": null,
+    "unsubscribed_at": null,
+    "unsubscribe_reason": ""
+  },
+  "client": {
+    "slug": "dtc-courses",
+    "subscribed": true,
+    "status": "subscribed",
+    "verified": true,
+    "verified_at": "2024-09-01T10:00:00Z",
+    "unsubscribed_at": null,
+    "unsubscribe_reason": ""
+  },
+  "can_send_marketing": false,
+  "can_send_transactional": false,
+  "tags": ["course-ml-zoomcamp"]
+}
+```
+
+---
+
+## PATCH /api/contacts/{contact_id}/validation
+
+Stores an external email validation result on the contact. Use this endpoint to record hygiene decisions from a third-party validation provider without going through the upsert flow.
+
+```
+PATCH /api/contacts/{contact_id}/validation
+```
+
+### Path parameters
+
+<ParamField path="contact_id" type="integer" required>
+  The internal Datamailer contact ID.
+</ParamField>
+
+### Request body
+
+<ParamField body="status" type="string" required>
+  The validation result. One of: `unknown`, `valid`, `invalid_syntax`, `no_mx`, `disposable`, `risky`, `manually_invalid`, `externally_validated`.
+</ParamField>
+
+<ParamField body="reason" type="string">
+  Free-text reason from the validation provider, stored as-is. Defaults to an empty string.
+</ParamField>
+
+<ParamField body="validated_at" type="string">
+  ISO-8601 timestamp of when validation was performed. Defaults to the current server time when the status or reason has changed, or preserves the existing timestamp when the values are identical. Pass `status: "unknown"` to clear the timestamp.
+</ParamField>
+
+<ParamField body="audience" type="string" required>
+  Slug of the audience used to scope the contact lookup.
+</ParamField>
+
+<ParamField body="client" type="string" required>
+  Slug of the authenticated client.
+</ParamField>
+
+### Example
+
+```bash
+curl -X PATCH https://datamailer.example.com/api/contacts/42/validation \
+  -H "Authorization: Bearer dm_dtccourses_demo_transactional_email_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "status": "no_mx",
+    "reason": "MX lookup returned NXDOMAIN",
+    "audience": "dtc-courses",
+    "client": "dtc-courses"
+  }'
+```
+
+### Response
+
+Returns the same full contact payload shape as the suppression endpoint, with `can_send_marketing` updated to reflect the new validation state. Statuses `invalid_syntax`, `no_mx`, `disposable`, `risky`, and `manually_invalid` all block marketing sends.
+
+---
+
+## Suppression error codes
+
+| Field | Error code | Meaning |
+|---|---|---|
+| `contact_id` | `not_found` | No contact with that ID, or no client subscription in this audience. Returns HTTP `404`. |
+| `audience` | `required` | `audience` was missing or blank. |
+| `audience` | `not_found` | No audience with that slug in the client's organization. |
+| `client` | `required` | `client` was missing or blank. |
+| `client` | `forbidden` | `client` does not match the authenticated client. Returns HTTP `403`. |
+| `global_unsubscribed` | `must_be_boolean` | Flag value is not a JSON boolean. |
+| `hard_bounced` | `must_be_boolean` | Flag value is not a JSON boolean. |
+| `complained` | `must_be_boolean` | Flag value is not a JSON boolean. |
+| `reason` | `must_be_string` | `reason` is not a string. |
+| `status` | `invalid` | Validation status is not a recognized `EmailValidationStatus` value. (Validation endpoint only.) |

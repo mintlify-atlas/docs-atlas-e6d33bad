@@ -1,0 +1,266 @@
+---
+title: "POST /api/contacts — Upsert Contact"
+sidebarTitle: "Upsert Contact"
+description: "POST /api/contacts creates or updates a contact and subscription. Accepts email, audience, client, status, tags, verified, and email_validation fields."
+---
+
+`POST /api/contacts` is the primary way to sync contact data into Datamailer. It creates or updates the global contact record, creates or updates the audience- and client-scoped subscription, applies email validation and suppression state, and assigns audience-scoped tags — all in a single atomic request.
+
+## Endpoint
+
+```
+POST /api/contacts
+```
+
+## Authentication
+
+Requires a Bearer token issued to the client whose slug matches the `client` field in the request body.
+
+```
+Authorization: Bearer <client-api-key>
+```
+
+## Request body
+
+<ParamField body="email" type="string" required>
+  The recipient's email address. Must be a valid RFC 5321 address. Normalized to lowercase before storage; the original casing is preserved for display.
+</ParamField>
+
+<ParamField body="audience" type="string" required>
+  Slug of the audience to subscribe the contact to. Must belong to the same organization as the authenticated client.
+</ParamField>
+
+<ParamField body="client" type="string" required>
+  Slug of the client making the request. Must exactly match the authenticated client's slug or the request is rejected with `403 Forbidden`.
+</ParamField>
+
+<ParamField body="status" type="string" default="pending">
+  Subscription status to set. One of `pending`, `subscribed`, or `unsubscribed`. Defaults to `pending` when omitted.
+</ParamField>
+
+<ParamField body="tags" type="string[]">
+  List of tag name strings to assign to this contact within the audience. Tags are audience-scoped and created automatically if they do not exist. Pass an empty array `[]` or omit the field to leave existing tags unchanged.
+</ParamField>
+
+<ParamField body="verified" type="boolean" default="false">
+  Whether the contact's email address has been verified by the client application. When `true` and no prior `verified_at` timestamp exists, the current time is recorded. Already-set `verified_at` timestamps are preserved.
+</ParamField>
+
+<ParamField body="email_validation" type="object">
+  External email validation result to store on the contact record.
+
+  <Expandable title="email_validation fields">
+    <ParamField body="email_validation.status" type="string">
+      Validation status. One of: `unknown`, `valid`, `invalid_syntax`, `no_mx`, `disposable`, `risky`, `manually_invalid`, `externally_validated`. Defaults to `unknown` when omitted.
+    </ParamField>
+
+    <ParamField body="email_validation.reason" type="string">
+      Free-text reason string from the validation provider, stored as-is.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="suppression" type="object">
+  Contact-level suppression flags to apply. Suppression is global — it affects deliverability across all audiences.
+
+  <Expandable title="suppression fields">
+    <ParamField body="suppression.global_unsubscribed" type="boolean">
+      When `true`, marks the contact as globally unsubscribed. Once set, the flag is not cleared by passing `false` — use the dedicated suppression endpoint to clear it.
+    </ParamField>
+
+    <ParamField body="suppression.hard_bounced" type="boolean">
+      When `true`, marks the contact as hard bounced.
+    </ParamField>
+
+    <ParamField body="suppression.complained" type="boolean">
+      When `true`, marks the contact as having filed a spam complaint.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+## Response
+
+A successful call returns HTTP `200` with the full contact status payload plus a `tags` array.
+
+<ResponseField name="contact_id" type="integer">
+  Internal Datamailer ID for the contact record.
+</ResponseField>
+
+<ResponseField name="email" type="string">
+  Normalized (lowercased) email address for the contact.
+</ResponseField>
+
+<ResponseField name="exists" type="boolean">
+  Always `true` for a successful upsert response.
+</ResponseField>
+
+<ResponseField name="verified" type="boolean">
+  Whether the contact has a `verified_at` timestamp set at the contact level.
+</ResponseField>
+
+<ResponseField name="verified_at" type="string | null">
+  ISO-8601 UTC timestamp of contact-level verification, or `null` if not verified.
+</ResponseField>
+
+<ResponseField name="email_validation" type="object">
+  Current email validation state.
+
+  <Expandable title="email_validation fields">
+    <ResponseField name="status" type="string">
+      One of `unknown`, `valid`, `invalid_syntax`, `no_mx`, `disposable`, `risky`, `manually_invalid`, `externally_validated`.
+    </ResponseField>
+    <ResponseField name="reason" type="string">
+      Provider-supplied reason string, or an empty string.
+    </ResponseField>
+    <ResponseField name="validated_at" type="string | null">
+      ISO-8601 UTC timestamp of the last validation update, or `null`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="global_unsubscribed" type="boolean">
+  Whether the contact has opted out of all marketing email globally.
+</ResponseField>
+
+<ResponseField name="hard_bounced" type="boolean">
+  Whether the contact's address has hard bounced.
+</ResponseField>
+
+<ResponseField name="complained" type="boolean">
+  Whether the contact has filed a spam complaint.
+</ResponseField>
+
+<ResponseField name="audience" type="object">
+  Audience-scoped subscription state.
+
+  <Expandable title="audience fields">
+    <ResponseField name="slug" type="string">The audience slug.</ResponseField>
+    <ResponseField name="subscribed" type="boolean">Whether the audience-level subscription status is `subscribed`.</ResponseField>
+    <ResponseField name="status" type="string | null">One of `pending`, `subscribed`, `unsubscribed`, or `null` if no audience subscription exists.</ResponseField>
+    <ResponseField name="verified" type="boolean">Whether the audience subscription has a `verified_at` timestamp.</ResponseField>
+    <ResponseField name="verified_at" type="string | null">ISO-8601 UTC timestamp of audience-subscription verification, or `null`.</ResponseField>
+    <ResponseField name="unsubscribed_at" type="string | null">ISO-8601 UTC timestamp when the audience-level unsubscription occurred, or `null`.</ResponseField>
+    <ResponseField name="unsubscribe_reason" type="string">Reason recorded at audience-level unsubscription, or an empty string.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="client" type="object">
+  Client-scoped subscription state. Same shape as `audience`.
+
+  <Expandable title="client fields">
+    <ResponseField name="slug" type="string">The client slug.</ResponseField>
+    <ResponseField name="subscribed" type="boolean">Whether the client-level subscription status is `subscribed`.</ResponseField>
+    <ResponseField name="status" type="string | null">One of `pending`, `subscribed`, `unsubscribed`, or `null` if no client subscription exists.</ResponseField>
+    <ResponseField name="verified" type="boolean">Whether the client subscription has a `verified_at` timestamp.</ResponseField>
+    <ResponseField name="verified_at" type="string | null">ISO-8601 UTC timestamp of client-subscription verification, or `null`.</ResponseField>
+    <ResponseField name="unsubscribed_at" type="string | null">ISO-8601 UTC timestamp when the client-level unsubscription occurred, or `null`.</ResponseField>
+    <ResponseField name="unsubscribe_reason" type="string">Reason recorded at client-level unsubscription, or an empty string.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="can_send_marketing" type="boolean">
+  Whether a marketing campaign email can currently be sent to this contact for this audience and client. `false` if the contact is suppressed, has a non-deliverable email validation status, is not subscribed, or has not been verified on any subscription level.
+</ResponseField>
+
+<ResponseField name="can_send_transactional" type="boolean">
+  Whether a transactional email can currently be sent to this contact. `false` only if the contact has hard bounced or complained.
+</ResponseField>
+
+<ResponseField name="tags" type="string[]">
+  Sorted list of tag slugs currently assigned to this contact within the audience.
+</ResponseField>
+
+## Example
+
+### Request
+
+```bash
+curl -X POST https://datamailer.example.com/api/contacts \
+  -H "Authorization: Bearer dm_dtccourses_demo_transactional_email_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "learner@example.com",
+    "audience": "dtc-courses",
+    "client": "dtc-courses",
+    "status": "subscribed",
+    "tags": ["course-ml-zoomcamp"],
+    "verified": true,
+    "email_validation": {
+      "status": "externally_validated",
+      "reason": "client signup validation"
+    }
+  }'
+```
+
+### Response
+
+```json
+{
+  "contact_id": 42,
+  "email": "learner@example.com",
+  "exists": true,
+  "verified": true,
+  "verified_at": "2024-09-01T10:00:00Z",
+  "email_validation": {
+    "status": "externally_validated",
+    "reason": "client signup validation",
+    "validated_at": "2024-09-01T10:00:00Z"
+  },
+  "global_unsubscribed": false,
+  "hard_bounced": false,
+  "complained": false,
+  "audience": {
+    "slug": "dtc-courses",
+    "subscribed": false,
+    "status": null,
+    "verified": false,
+    "verified_at": null,
+    "unsubscribed_at": null,
+    "unsubscribe_reason": ""
+  },
+  "client": {
+    "slug": "dtc-courses",
+    "subscribed": true,
+    "status": "subscribed",
+    "verified": true,
+    "verified_at": "2024-09-01T10:00:00Z",
+    "unsubscribed_at": null,
+    "unsubscribe_reason": ""
+  },
+  "can_send_marketing": true,
+  "can_send_transactional": true,
+  "tags": ["course-ml-zoomcamp"]
+}
+```
+
+## Error codes
+
+Validation errors return HTTP `400` (or `403` for client mismatch) with the following structure:
+
+```json
+{
+  "error": {
+    "code": "validation_error",
+    "fields": {
+      "<field>": "<error_code>"
+    }
+  }
+}
+```
+
+| Field | Error code | Meaning |
+|---|---|---|
+| `email` | `required` | `email` was missing or blank. |
+| `email` | `invalid` | `email` did not pass RFC 5321 format validation. |
+| `audience` | `required` | `audience` was missing or blank. |
+| `audience` | `not_found` | No audience with that slug exists in the authenticated client's organization. |
+| `client` | `required` | `client` was missing or blank. |
+| `client` | `forbidden` | `client` does not match the authenticated client's slug. Returns HTTP `403`. |
+| `status` | `invalid` | `status` is not one of `pending`, `subscribed`, or `unsubscribed`. |
+| `tags` | `must_be_list` | `tags` was provided but is not a JSON array. |
+| `tags` | `must_be_non_empty_strings` | One or more tag entries are not non-empty strings. |
+| `verified` | `must_be_boolean` | `verified` was provided but is not a boolean. |
+| `email_validation` | `must_be_object` | `email_validation` was provided but is not a JSON object. |
+| `email_validation.status` | `invalid` | `email_validation.status` is not a recognized `EmailValidationStatus` value. |
+| `suppression` | `must_be_object` | `suppression` was provided but is not a JSON object. |
+| `suppression.global_unsubscribed` | `must_be_boolean` | Suppression flag value is not a boolean. |

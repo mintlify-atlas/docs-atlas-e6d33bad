@@ -1,0 +1,139 @@
+---
+title: "Campaign Lifecycle: From Draft to Delivered"
+sidebarTitle: "Campaigns"
+description: "How Datamailer manages campaign creation, recipient snapshotting, batch sending through SQS and Lambda, and per-recipient engagement tracking."
+---
+
+A campaign in Datamailer is a one-to-many email send from a client to an audience. The design prioritizes auditability: every intended recipient gets their own database row before a single message is sent, and every engagement event is recorded as an immutable append to the event log. This means you can always answer the question "why was this person skipped?" long after the campaign has finished sending.
+
+---
+
+## Campaign Statuses
+
+A campaign moves through a linear status machine from creation to completion. Terminal statuses are `sent`, `cancelled`, and `failed`.
+
+| Status | Description |
+|---|---|
+| `draft` | Being composed; not yet queued for sending |
+| `queued` | Accepted for sending; batch payloads enqueued to SQS |
+| `snapshotting` | Lambda is expanding filters into `campaign_recipient` rows |
+| `sending` | Lambda workers are sending messages through SES |
+| `sent` | All recipients have been processed |
+| `cancelled` | Cancelled before or during sending |
+| `failed` | An unrecoverable error occurred during snapshotting or sending |
+
+---
+
+## Campaign Fields
+
+| Field | Description |
+|---|---|
+| `client` | The client that owns this campaign |
+| `audience` | The audience being targeted |
+| `subject` | Email subject line |
+| `preview_text` | Preview snippet shown in inbox clients |
+| `html_body` | Full HTML email body |
+| `text_body` | Plain-text fallback body |
+| `include_tags` | Send only to contacts with **all** of these tags (slugs) |
+| `exclude_tags` | Exclude contacts with **any** of these tags (slugs) |
+| `scheduled_at` | Optional future send time |
+| `sent_at` | When sending completed |
+
+Tag filter values are stored as sorted slug arrays and normalized via `slugify` when the campaign is saved.
+
+---
+
+## Recipient Snapshot
+
+Before any email is sent, Datamailer expands the campaign's audience + tag filters into a `CampaignRecipient` row for every candidate contact. For a 120k-recipient campaign, this creates 120k rows — that is intentional. The snapshot is the audit trail.
+
+Each recipient row is immediately evaluated against suppression and subscription rules. Recipients who cannot receive the email are marked `skipped` with a specific `skip_reason`.
+
+### Skip Reasons
+
+| Skip Reason | Condition |
+|---|---|
+| `hard_bounce` | `contact.hard_bounced_at` is set |
+| `complaint` | `contact.complained_at` is set |
+| `global_unsubscribe` | `contact.global_unsubscribed_at` is set |
+| `invalid_email` | Email validation status is non-deliverable |
+| `unverified` | `contact.verified_at` is null |
+| `audience_unsubscribe` | Audience-level subscription is unsubscribed |
+| `client_unsubscribe` | Client-scoped subscription is unsubscribed |
+| `suppressed` | No active client-scoped subscription found |
+| `duplicate` | Contact appears more than once in the candidate set |
+
+<Note>
+Every recipient row is checked again during the Lambda send worker execution. If a contact's suppression state changes between snapshotting and sending — for example, a new hard bounce arrives — the worker will skip the recipient and update the row rather than sending a duplicate.
+</Note>
+
+### Recipient Row Fields
+
+| Field | Description |
+|---|---|
+| `campaign` | Parent campaign |
+| `contact` | The contact being sent to |
+| `email` | Email address at snapshot time |
+| `status` | `pending`, `sent`, `skipped`, `failed`, `bounced`, `complained`, `unsubscribed` |
+| `skip_reason` | Populated when status is `skipped` |
+| `tracking_token_hash` | Hash of the open-pixel tracking token |
+| `unsubscribe_token_hash` | Hash of the unsubscribe link token |
+| `ses_message_id` | SES message ID returned after successful send |
+| `sent_at`, `delivered_at` | Send and delivery timestamps |
+| `first_opened_at`, `first_clicked_at` | First engagement timestamps |
+| `open_count`, `click_count` | Total engagement counts |
+
+---
+
+## Engagement Statistics
+
+Campaign-level stats are aggregate counters maintained on the `Campaign` row and refreshed after each batch of sends and after each tracking event.
+
+| Stat | Description |
+|---|---|
+| `recipient_count` | Total non-skipped recipients |
+| `sent_count` | Recipients where SES accepted the message |
+| `skipped_count` | Recipients skipped at snapshot time |
+| `delivered_count` | Recipients confirmed delivered by SES |
+| `unique_open_count` | Recipients with at least one open |
+| `open_count` | Total open events (including repeat opens) |
+| `unique_click_count` | Recipients with at least one click |
+| `click_count` | Total click events |
+| `unsubscribe_count` | Recipients who unsubscribed via the campaign link |
+| `bounce_count` | Recipients with a hard bounce |
+| `complaint_count` | Recipients who marked the message as spam |
+
+### Derived Rates
+
+| Rate | Formula |
+|---|---|
+| Open rate | `unique_open_count / sent_count` |
+| Click rate | `unique_click_count / sent_count` |
+| Click-to-open rate | `unique_click_count / unique_open_count` |
+| Bounce rate | `bounce_count / sent_count` |
+| Unsubscribe rate | `unsubscribe_count / sent_count` |
+
+---
+
+## Campaign Send Flow
+
+<Steps>
+  <Step title="Create campaign in draft">
+    A staff user creates a campaign for a client and audience, sets the subject, body, and optional tag filters, and saves it in `draft` status.
+  </Step>
+  <Step title="Queue the campaign">
+    The staff user triggers sending. Datamailer acquires a row-level lock on the campaign, verifies it is still in `draft`, then immediately calls `snapshot_campaign_recipients` within the same transaction.
+  </Step>
+  <Step title="Snapshot recipients">
+    Datamailer queries all contacts with a subscription to the campaign's audience and client, applies `include_tags` and `exclude_tags` filters, and creates one `CampaignRecipient` row per contact. Each row is marked `pending` or `skipped` based on suppression and subscription state.
+  </Step>
+  <Step title="Enqueue SQS batches">
+    Pending recipient IDs are split into batches (default size controlled by `CAMPAIGN_EMAIL_BATCH_SIZE`). One SQS message is enqueued per batch. The campaign status moves to `queued`. A `queued` `EmailEvent` is appended for each pending recipient.
+  </Step>
+  <Step title="Lambda sends via SES">
+    Lambda workers consume SQS messages. For each recipient ID in a batch, the worker re-checks suppression state, renders the email with tracking URLs, calls SES `SendEmail`, and updates the recipient row to `sent` with the returned `ses_message_id`.
+  </Step>
+  <Step title="SES delivers and publishes events">
+    SES delivers the message and publishes delivery, open, click, bounce, and complaint notifications to the `ses-webhooks` SQS queue via SNS. Datamailer's webhook worker processes these events and updates the recipient row and campaign aggregate counters.
+  </Step>
+</Steps>

@@ -1,0 +1,247 @@
+---
+title: "Configure Datamailer with Environment Variables"
+sidebarTitle: "Configuration"
+description: "Complete reference for all Datamailer environment variables covering Django settings, database, AWS SES, SQS queues, and sending defaults."
+---
+
+Datamailer reads all of its runtime configuration from environment variables, loaded at startup from a `.env` file in the project root via `python-dotenv`. There are no hard-coded settings files to edit — copy the example file, fill in the values for your environment, and restart the server.
+
+```bash
+cp .env.example .env
+```
+
+The sections below document every supported variable. Variables marked **required in production** must be set when `DEBUG=False`; Datamailer will raise `ImproperlyConfigured` at startup if they are missing.
+
+---
+
+## Django Core
+
+<ParamField path="SECRET_KEY" type="string" required>
+  The Django secret key used for cryptographic signing (sessions, CSRF tokens, etc.). Must be a long, random, unpredictable string in production.
+
+  <Warning>
+    Datamailer raises `ImproperlyConfigured` at startup if `SECRET_KEY` is empty and `DEBUG=False`. In `DEBUG=True` mode it falls back to a hard-coded development-only value and emits a `RuntimeWarning`. **Never use the development fallback in production.**
+  </Warning>
+</ParamField>
+
+<ParamField path="DEBUG" type="boolean" default="True">
+  Enables Django debug mode. Set to `False` in production. Accepts `1`, `true`, or `yes` (case-insensitive) as truthy values.
+
+  <Warning>
+    Running with `DEBUG=True` in a public-facing environment exposes full tracebacks and disables several security checks. Always set `DEBUG=False` in production.
+  </Warning>
+</ParamField>
+
+<ParamField path="ALLOWED_HOSTS" type="string" default="localhost,127.0.0.1">
+  Comma-separated list of hostnames that Django will serve. In production, include every domain name and IP address your deployment responds to.
+
+  **Example:** `datamailer.example.com,10.0.0.5`
+</ParamField>
+
+<ParamField path="CSRF_TRUSTED_ORIGINS" type="string" default="">
+  Comma-separated list of trusted origins for CSRF protection (required when serving the UI behind a reverse proxy with HTTPS). Include the scheme.
+
+  **Example:** `https://datamailer.example.com`
+</ParamField>
+
+---
+
+## Database
+
+<ParamField path="DATABASE_URL" type="string" default="sqlite:///db.sqlite3">
+  A [dj-database-url](https://github.com/jazzband/dj-database-url) connection string. SQLite is fine for local development. Use a Postgres URL for production.
+
+  | Environment | Example value |
+  | ----------- | ------------- |
+  | Local (SQLite) | `sqlite:///db.sqlite3` |
+  | Production (Postgres) | `postgres://user:password@host:5432/datamailer` |
+</ParamField>
+
+---
+
+## Email Sending
+
+<ParamField path="EMAIL_BACKEND" type="string" default="django.core.mail.backends.console.EmailBackend">
+  The Django email backend used for Django's own outgoing mail (password reset emails for staff users, etc.). For production delivery through SES, set this to `django_ses.SESBackend` or the appropriate boto3-backed backend.
+
+  | Value | Use case |
+  | ----- | -------- |
+  | `django.core.mail.backends.console.EmailBackend` | Local development — prints to stdout |
+  | `django.core.mail.backends.smtp.EmailBackend` | Generic SMTP relay |
+</ParamField>
+
+<ParamField path="DEFAULT_FROM_EMAIL" type="string" default="newsletter@example.com">
+  The default `From` address for all outgoing email. Must be a verified sender identity in SES for production deployments.
+</ParamField>
+
+---
+
+## Public URL
+
+<ParamField path="PUBLIC_BASE_URL" type="string" default="http://localhost:8000">
+  The externally reachable base URL of your Datamailer deployment, without a trailing slash. Used to construct open-tracking pixel URLs, click-tracking redirect URLs, and unsubscribe links that are embedded in outgoing emails.
+
+  **Example:** `https://datamailer.example.com`
+</ParamField>
+
+---
+
+## AWS Credentials & Region
+
+<ParamField path="AWS_REGION" type="string" default="us-east-1">
+  The AWS region for SES and SQS resources.
+</ParamField>
+
+<ParamField path="AWS_ACCESS_KEY_ID" type="string">
+  AWS access key ID. Leave blank when running on an EC2 instance or Lambda with an attached IAM role — boto3 will pick up credentials from the instance metadata service automatically.
+</ParamField>
+
+<ParamField path="AWS_SECRET_ACCESS_KEY" type="string">
+  AWS secret access key. As with `AWS_ACCESS_KEY_ID`, leave blank when using IAM roles.
+</ParamField>
+
+<ParamField path="AWS_ENDPOINT_URL" type="string" default="">
+  Override the AWS service endpoint URL. Set this to your LocalStack endpoint (typically `http://localhost:4566`) when developing locally with emulated SQS and SES.
+
+  <Note>
+    Leave `AWS_ENDPOINT_URL` blank in production. It is only intended for LocalStack or other local AWS-compatible endpoints during development and testing.
+  </Note>
+</ParamField>
+
+---
+
+## Amazon SES
+
+<ParamField path="AWS_SES_CONFIGURATION_SET" type="string" default="">
+  The name of the SES configuration set to attach to outgoing emails. Configuration sets enable SES to publish delivery, bounce, complaint, open, and click events to SNS topics, which Datamailer then consumes via SQS. Leave blank for local development without SES.
+</ParamField>
+
+---
+
+## SQS Queue URLs
+
+These variables provide the full SQS queue URLs for each Datamailer processing queue. They are required for any environment where you want actual email sending or event processing. Leave them blank for local development against a local server without the full send pipeline.
+
+<ParamField path="SQS_TRANSACTIONAL_EMAIL_QUEUE_URL" type="string" default="">
+  Full URL of the SQS queue that receives transactional email send jobs. The `/api/transactional/send` endpoint requires this to be set before it can enqueue work.
+
+  **Example:** `https://sqs.us-east-1.amazonaws.com/123456789012/transactional-email`
+</ParamField>
+
+<ParamField path="SQS_CAMPAIGN_EMAIL_QUEUE_URL" type="string" default="">
+  Full URL of the SQS queue that receives campaign email send jobs.
+
+  **Example:** `https://sqs.us-east-1.amazonaws.com/123456789012/campaign-email`
+</ParamField>
+
+<ParamField path="SQS_EMAIL_EVENTS_QUEUE_URL" type="string" default="">
+  Full URL of the SQS queue that receives processed email engagement events (opens, clicks, bounces, complaints) for writing back to Postgres.
+
+  **Example:** `https://sqs.us-east-1.amazonaws.com/123456789012/email-events`
+</ParamField>
+
+<ParamField path="SQS_SES_WEBHOOKS_QUEUE_URL" type="string" default="">
+  Full URL of the SQS queue that receives raw inbound SES webhook payloads from SNS before they are processed by the event Lambda worker.
+
+  **Example:** `https://sqs.us-east-1.amazonaws.com/123456789012/ses-webhooks`
+</ParamField>
+
+---
+
+## SQS Queue Names
+
+Queue names are used in contexts where a name is required rather than a URL (for example, CloudFormation references or smoke scripts). They must match the names of the queues identified by the `SQS_*_QUEUE_URL` variables above.
+
+<ParamField path="TRANSACTIONAL_EMAIL_QUEUE_NAME" type="string" default="transactional-email">
+  The name of the transactional email SQS queue.
+</ParamField>
+
+<ParamField path="CAMPAIGN_EMAIL_QUEUE_NAME" type="string" default="campaign-email">
+  The name of the campaign email SQS queue.
+</ParamField>
+
+<ParamField path="SES_WEBHOOKS_QUEUE_NAME" type="string" default="ses-webhooks">
+  The name of the SES webhooks SQS queue.
+</ParamField>
+
+<ParamField path="EMAIL_EVENTS_QUEUE_NAME" type="string" default="email-events">
+  The name of the email events SQS queue.
+</ParamField>
+
+---
+
+## API Docs
+
+<Note>
+  The in-app interactive API docs at `/api-docs/` use `DATAMAILER_API_DOCS_BASE_URL` as the base URL for copy-pasteable `curl` examples. This lets staff run the examples against a different environment — for example, a staging server — without changing the server's own `PUBLIC_BASE_URL`. If not set, it falls back to `PUBLIC_BASE_URL`.
+
+  Set `DATAMAILER_API_DOCS_BASE_URL` when you want the in-app examples to target a different host than the one serving the UI.
+
+  **Example:** `https://staging.datamailer.example.com`
+</Note>
+
+---
+
+## Example: Local Development `.env`
+
+This configuration uses SQLite, the console email backend, and no AWS services. It is the default produced by `cp .env.example .env` and is suitable for running the operator UI and exploring the API with demo data.
+
+```ini
+DEBUG=True
+SECRET_KEY=                          # optional in DEBUG=True; a dev fallback is used
+DATABASE_URL=sqlite:///db.sqlite3
+ALLOWED_HOSTS=localhost,127.0.0.1
+CSRF_TRUSTED_ORIGINS=
+PUBLIC_BASE_URL=http://localhost:8000
+DEFAULT_FROM_EMAIL=newsletter@example.com
+EMAIL_BACKEND=django.core.mail.backends.console.EmailBackend
+
+AWS_REGION=us-east-1
+AWS_ENDPOINT_URL=                    # blank = real AWS; set to http://localhost:4566 for LocalStack
+AWS_ACCESS_KEY_ID=
+AWS_SECRET_ACCESS_KEY=
+AWS_SES_CONFIGURATION_SET=
+
+SQS_TRANSACTIONAL_EMAIL_QUEUE_URL=
+SQS_CAMPAIGN_EMAIL_QUEUE_URL=
+SQS_EMAIL_EVENTS_QUEUE_URL=
+SQS_SES_WEBHOOKS_QUEUE_URL=
+
+TRANSACTIONAL_EMAIL_QUEUE_NAME=transactional-email
+CAMPAIGN_EMAIL_QUEUE_NAME=campaign-email
+SES_WEBHOOKS_QUEUE_NAME=ses-webhooks
+EMAIL_EVENTS_QUEUE_NAME=email-events
+```
+
+---
+
+## Example: Production `.env`
+
+This configuration uses Postgres, real AWS SES for delivery, and four SQS queues for the full send and event pipeline. Replace placeholder values with your actual AWS account, region, and infrastructure details.
+
+```ini
+DEBUG=False
+SECRET_KEY=replace-with-a-long-random-secret-key
+DATABASE_URL=postgres://datamailer:strongpassword@db.internal:5432/datamailer
+ALLOWED_HOSTS=datamailer.example.com
+CSRF_TRUSTED_ORIGINS=https://datamailer.example.com
+PUBLIC_BASE_URL=https://datamailer.example.com
+DEFAULT_FROM_EMAIL=hello@yourdomain.com
+EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend
+
+AWS_REGION=us-east-1
+AWS_ENDPOINT_URL=
+AWS_ACCESS_KEY_ID=                   # leave blank if using an IAM role
+AWS_SECRET_ACCESS_KEY=               # leave blank if using an IAM role
+AWS_SES_CONFIGURATION_SET=datamailer-production
+
+SQS_TRANSACTIONAL_EMAIL_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/123456789012/transactional-email
+SQS_CAMPAIGN_EMAIL_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/123456789012/campaign-email
+SQS_EMAIL_EVENTS_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/123456789012/email-events
+SQS_SES_WEBHOOKS_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/123456789012/ses-webhooks
+
+TRANSACTIONAL_EMAIL_QUEUE_NAME=transactional-email
+CAMPAIGN_EMAIL_QUEUE_NAME=campaign-email
+SES_WEBHOOKS_QUEUE_NAME=ses-webhooks
+EMAIL_EVENTS_QUEUE_NAME=email-events
+```

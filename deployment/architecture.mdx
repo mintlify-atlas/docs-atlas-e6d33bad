@@ -1,0 +1,99 @@
+---
+title: "Datamailer Architecture: Django, Postgres, SQS, and Lambda"
+sidebarTitle: "Architecture"
+description: "How Datamailer's Django web app, Postgres database, SQS queues, Lambda workers, and Amazon SES fit together for scalable email delivery."
+---
+
+Datamailer is a standalone email service used by multiple client applications. It owns audience state, subscription preferences, campaign sending, transactional sending, tracking, and email engagement history. The architecture is designed to replace high per-contact mailing platform costs with SES-based delivery, support multiple clients with shared or separate audiences, and scale bursty sending workloads without paying for always-running infrastructure.
+
+## Components
+
+<CardGroup cols={2}>
+  <Card title="Django Web App" icon="browser">
+    Serves the product UI, Django admin, and client API. Handles audience, contact, tag, subscription, campaign, and template management. Exposes public endpoints for email verification, unsubscribes, open pixels, click redirects, and hosted preference pages. Enqueues work into SQS rather than running long sends inside HTTP requests.
+  </Card>
+  <Card title="Postgres" icon="database">
+    Source of truth for all relational product data and event history: contacts, audiences, clients, subscription state, tags, campaign definitions, campaign recipient snapshots, transactional messages, the email event timeline, and aggregate campaign stats. Chosen for its filtering, auditability, contact history, reporting, and admin workflow support.
+  </Card>
+  <Card title="SQS Queues" icon="arrow-right-arrow-left">
+    Durable buffer between the Django control plane and bursty Lambda workers. Four standard queues — `transactional-email`, `campaign-email`, `ses-webhooks`, and `email-events` — each backed by a dead-letter queue. SQS gives native durability, retries, visibility timeouts, CloudWatch metrics, and direct Lambda integration without requiring Redis.
+  </Card>
+  <Card title="Lambda Workers" icon="bolt">
+    Handle slow or high-volume operations outside HTTP requests: expanding campaign filters into recipient snapshots, sending campaign emails in bounded batches, sending transactional emails, processing SES webhook events, and recomputing aggregate stats. Lambda fits the bursty campaign send pattern because the sender is idle most of the time.
+  </Card>
+  <Card title="Amazon SES" icon="envelope">
+    Handles actual email delivery. Datamailer owns the decision to send, message construction, tracking URL generation, and post-send state. SES provides verified sender identities, dedicated configuration sets for event publishing, bounce and complaint notifications, and message IDs for correlation back to recipient rows.
+  </Card>
+</CardGroup>
+
+## Campaign Send Flow
+
+<Steps>
+  <Step title="Create Campaign">
+    A staff user creates a campaign for a client and audience, selecting include/exclude tags and other recipient filters through the product UI or Django admin.
+  </Step>
+  <Step title="Snapshot Recipients">
+    A Lambda job expands the filters and snapshots intended recipients into `campaign_recipients`. Each recipient row is marked `pending`, `skipped`, or left for later resolution.
+  </Step>
+  <Step title="Enqueue Batches">
+    The Django control plane enqueues bounded batches of `campaign_recipient_ids` onto the `campaign-email` SQS queue using the `campaign-email` v1 contract.
+  </Step>
+  <Step title="Send via SES">
+    Campaign send Lambda workers consume batches, load each `campaign_recipients` row, check that the row is still eligible, and send through SES. Each message contains a tracking pixel, rewritten links, and unsubscribe/preference links.
+  </Step>
+  <Step title="Record Results">
+    Each sent email stores the SES `MessageId` on the recipient row, sets `status = sent`, and appends an immutable `email_events` record. Campaign aggregate stats are updated from recipient and event data.
+  </Step>
+  <Step title="Process Events">
+    Tracking and SES events (bounces, complaints, opens, clicks) are routed through the `ses-webhooks` and `email-events` queues, updating recipient summary columns and appending further `email_events`.
+  </Step>
+</Steps>
+
+## Transactional Send Flow
+
+<Steps>
+  <Step title="Client API Call">
+    A client application calls the Datamailer API with a template key, recipient email, and an idempotency key. Datamailer validates the client, contact, and suppression rules.
+  </Step>
+  <Step title="Enqueue Job">
+    Django creates a `transactional_messages` row and enqueues a `transactional-email` v1 message onto the `transactional-email` SQS queue.
+  </Step>
+  <Step title="Lambda Send">
+    The transactional send Lambda loads the `transactional_messages` row, checks `(client_id, idempotency_key)` to ensure the message has not already been sent, and sends through SES.
+  </Step>
+  <Step title="Record History">
+    Datamailer stores the SES `MessageId`, updates the `transactional_messages` row, and appends event history. Transactional messages may bypass marketing unsubscribes when legally appropriate, but always respect hard suppressions such as complaints and permanent bounces.
+  </Step>
+</Steps>
+
+## Design Decisions
+
+### SQS Over Redis
+
+Redis is useful for cache and fast ephemeral queues, but the primary send queue must be durable and operationally simple. SQS gives native durability, retries, visibility timeouts, dead-letter queues, CloudWatch metrics, and direct Lambda integration without requiring an additional stateful service. Redis or Valkey can be introduced later for caching or rate counters, but it is not required for the MVP send pipeline.
+
+### Lambda Over Always-Running Workers
+
+Campaign sending is bursty: the sender is idle most of the time, then highly active during a blast. Lambda fits this pattern better than an always-running worker container. SQS plus Lambda gives durable retries without paying for an always-running sender. Lambda concurrency limits also serve as a natural throttle to protect SES send-rate limits and Postgres connection counts.
+
+## Non-Goals for MVP
+
+The following capabilities are explicitly out of scope for the initial release:
+
+- Full marketing automation journeys.
+- Drag-and-drop email builder.
+- Advanced A/B testing.
+- Multi-region active-active delivery.
+- Replacing every client application's auth system.
+
+## Growth Path
+
+<Note>
+  The MVP runs on a single small ARM instance, a single RDS instance, and Lambda workers. As usage grows, the following additions can be made without redesigning the core architecture:
+
+  - **RDS Proxy** — add when Lambda DB connection pressure triggers `DatabaseConnections` alarms or connection wait errors.
+  - **ECS/Fargate long-running workers** — consider only if Lambda concurrency or timeout limits become genuinely painful.
+  - **Table partitioning** — partition high-growth event tables (e.g. `email_events`) as row counts grow.
+  - **Read replica** — add for reporting dashboards and analytics queries to avoid contention with write-path queries.
+  - **S3 archival** — archive old raw events to S3 while keeping summary stats in Postgres to control storage costs.
+</Note>

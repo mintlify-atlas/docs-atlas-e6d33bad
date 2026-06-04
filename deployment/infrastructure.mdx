@@ -1,0 +1,160 @@
+---
+title: "Deploy Datamailer to AWS with CloudFormation"
+sidebarTitle: "Infrastructure"
+description: "Step-by-step guide to deploying Datamailer on AWS: EC2, RDS Postgres, SQS queues, Lambda workers, Amazon SES, and CloudWatch monitoring."
+---
+
+Datamailer deploys to AWS using a single CloudFormation template that provisions all infrastructure for a given environment — staging or production — from one parameter file. The template is intentionally practical: definitions are validated locally without requiring AWS credentials in CI, while account-specific IDs, DNS records, SES production access, alarm subscribers, and restore drills remain human-verified checks.
+
+## Infrastructure Shape
+
+### Django Web
+
+The Django application runs on a single ARM EC2 instance (`t4g.nano` for staging, `t4g.micro` for production by default). Caddy terminates HTTPS via Let's Encrypt and reverse-proxies to Gunicorn, which is managed by systemd as the `datamailer.service` unit. Static files are served by WhiteNoise directly from Django. CloudWatch agent ships logs and system metrics; SSM Session Manager is the preferred admin access method.
+
+### Postgres
+
+RDS Postgres runs in private subnets with encrypted storage, deletion snapshots, and automated backups. The web application and Lambda workers access the database only through security groups. Separate database credentials are used where practical: `datamailer_app` for the web host and `datamailer_worker` for Lambda.
+
+### SQS Queues
+
+Four separate SQS standard queues and their dead-letter queues are provisioned:
+
+| Queue | DLQ | Purpose |
+|---|---|---|
+| `transactional-email` | `transactional-email-dlq` | High-priority account, verification, and password reset email |
+| `campaign-email` | `campaign-email-dlq` | Campaign recipient batch send jobs |
+| `ses-webhooks` | `ses-webhooks-dlq` | Asynchronous SES provider event notifications |
+| `email-events` | `email-events-dlq` | Optional async tracking and event ingest |
+
+### Lambda Workers
+
+Workers run on Python 3.12 `arm64`. Each worker has a dedicated IAM role scoped to its own source queue, DLQ, and log group. Conservative reserved concurrency limits are applied at launch: transactional 4, campaign 2, SES webhooks 2, email events 1.
+
+### SES
+
+A per-environment SES configuration set and sender identity are parameterized in the CloudFormation template. DNS verification, sandbox exit, and production send quota approval are human checks.
+
+### Monitoring
+
+CloudWatch log groups are created for each worker with configurable retention (14 days staging, 30 days production by default). Alarms and a dashboard cover queue age, DLQ depth, Lambda errors/throttles/duration, SES bounces/complaints, DB CPU/storage/connections, web health, stuck campaigns, and transactional queue latency.
+
+## CloudFormation Files
+
+```text
+infra/cloudformation/datamailer-mvp.json          # Main CloudFormation template
+infra/config/staging.parameters.example.json      # Staging parameter template
+infra/config/production.parameters.example.json   # Production parameter template
+infra/config/web.env.example                      # Web host environment example
+scripts/validate_infra.py                         # Local validation — no AWS calls
+scripts/smoke_test_staging.py                     # Automated + human check smoke test
+```
+
+## Deploy Flow
+
+<Steps>
+  <Step title="Build Lambda Artifact">
+    Build and upload a Lambda artifact zip containing the Django project and its dependencies to the environment artifact bucket. The zip is referenced by `LambdaArtifactKey` in the parameter file.
+  </Step>
+  <Step title="Bake AMI">
+    Bake or select an ARM64 AMI that includes Python 3.12, `uv`, Caddy, the CloudWatch agent, and a `datamailer.service` systemd unit. Alternatively, reuse an existing baked AMI and pass its ID as `WebAmiId`.
+  </Step>
+  <Step title="Fill Parameters">
+    Copy the example parameter file to a private file and replace every `REPLACE` placeholder with real account-specific values — VPC/subnet IDs, certificate ARN, artifact bucket, SES identity, alarm SNS topic, and database credentials.
+
+    ```bash
+    cp infra/config/staging.parameters.example.json \
+       infra/config/staging.parameters.private.json
+    # Edit staging.parameters.private.json and fill all REPLACE values
+    ```
+  </Step>
+  <Step title="Validate Locally">
+    Run local validation before touching AWS. This script checks the CloudFormation template structure and parameter completeness without making any AWS API calls.
+
+    ```bash
+    make validate-infra
+    ```
+  </Step>
+  <Step title="Deploy CloudFormation Stack">
+    Deploy or update the stack. `CAPABILITY_NAMED_IAM` is required because the template creates named IAM roles for each Lambda worker.
+
+    ```bash
+    aws cloudformation deploy \
+      --stack-name datamailer-staging \
+      --template-file infra/cloudformation/datamailer-mvp.json \
+      --parameter-overrides file://infra/config/staging.parameters.private.json \
+      --capabilities CAPABILITY_NAMED_IAM
+    ```
+  </Step>
+  <Step title="Set Up the Web Host">
+    On the web host, render `/etc/datamailer/environment` from Secrets Manager and SSM Parameter Store values plus the CloudFormation stack outputs. Then run the release steps:
+
+    ```bash
+    uv run python manage.py collectstatic --noinput
+    uv run python manage.py migrate
+    sudo systemctl restart datamailer
+    sudo systemctl restart caddy
+    ```
+  </Step>
+  <Step title="Run Smoke Tests">
+    Run the smoke test script against the staging environment. HTTP health checks are automated; AWS queue round-trip checks run when queue URLs and credentials are provided; remaining promotion checks are printed as human tasks.
+
+    ```bash
+    uv run python scripts/smoke_test_staging.py \
+      --base-url https://staging.datamailer.example.com \
+      --stack-name datamailer-staging \
+      --transactional-queue-url "$SQS_TRANSACTIONAL_EMAIL_QUEUE_URL"
+    ```
+  </Step>
+  <Step title="Promote to Production">
+    Promote to production only after the human checks in the runbook are complete: SES production access approved, DNS records validated, bounce/complaint routing verified end to end in staging, and alarm notifications confirmed to reach the on-call channel.
+  </Step>
+</Steps>
+
+## Lambda IAM Roles
+
+Each Lambda worker has a dedicated runtime role with the minimum permissions required for its function. Worker roles use inline runtime permissions rather than broad Lambda execution managed policies so log writes stay scoped to the worker's own log group.
+
+| Role | Queue Access | SES | Secrets |
+|---|---|---|---|
+| `TransactionalEmailWorkerRole` | Read/delete `transactional-email`; write `transactional-email-dlq` | Send email | Read DB secret |
+| `CampaignEmailWorkerRole` | Read/delete `campaign-email`; write `campaign-email-dlq` | Send email | Read DB secret |
+| `SesWebhooksWorkerRole` | Read/delete `ses-webhooks`; write `ses-webhooks-dlq` | None | Read DB secret |
+| `EmailEventsWorkerRole` | Read/delete `email-events`; write `email-events-dlq` | None | Read DB secret |
+
+<Note>
+  The `EmailEventsWorkerRole` event-source mapping is intentionally **disabled** at launch. Enable it only when optional async event processing is turned on.
+</Note>
+
+## Postgres Connection Management
+
+Lambda concurrency can exhaust Postgres connections if left unchecked. The following controls are applied from launch:
+
+- Conservative reserved concurrency per worker (transactional 4, campaign 2, SES webhooks 2, email events 1).
+- Short database transactions in all worker code paths.
+- Small send batch sizes to limit per-invocation connection hold time.
+- Separate database user for workers (`datamailer_worker`) with least privilege.
+
+If `DatabaseConnections` alarms fire or connection wait errors appear, first lower the Lambda event-source maximum concurrency. Add RDS Proxy when sustained worker pressure requires it.
+
+## SES Requirements
+
+<Note>
+  Before routing any production traffic through SES, verify all of the following:
+
+  - **Verified sender identity** — `SESSenderIdentity` is verified in the SES console for the target region.
+  - **DNS records** — DKIM, SPF, DMARC, and optional custom MAIL FROM records are published and validate in SES.
+  - **Sandbox exit** — SES production access (sandbox exit) and send quota are approved for the account.
+  - **Bounce and complaint routing** — the `ses-webhooks` queue drains, the worker logs notifications, the `ses-webhooks-dlq` stays empty, and alarms route to the on-call channel. Verify this end to end in staging before any production sends.
+  - **Alarm routing** — CloudWatch alarm notifications reach the expected on-call destination.
+</Note>
+
+## Rollback Procedure
+
+If a deployment causes delivery failures or data issues:
+
+1. **Pause campaign sends** first if email delivery is affected, to avoid duplicate sends or corrupted recipient state.
+2. **Revert the Lambda artifact** — update `LambdaArtifactKey` in the parameter file to point to the previous release zip and redeploy the CloudFormation stack.
+3. **Revert the web host** — point the `datamailer.service` unit to the previous release artifact and restart: `sudo systemctl restart datamailer caddy`.
+4. **Disable failing Lambda event-source mappings** if workers are causing retries that could worsen data state before the fix lands.
+5. **Postgres restore** — a database restore from an RDS snapshot is a human decision. Follow the Postgres restore drill in the operations runbook: restore to a new staging instance first, run `manage.py migrate --check`, verify data, and record start/end time before considering a production restore.

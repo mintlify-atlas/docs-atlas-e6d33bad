@@ -1,0 +1,161 @@
+---
+title: "GET /api/contacts.csv — Export Contacts as CSV"
+sidebarTitle: "CSV Export"
+description: "GET /api/contacts.csv streams a CSV export of all contacts visible to the authenticated client, including subscription, tag, validation, and suppression columns."
+---
+
+`GET /api/contacts.csv` returns a CSV file containing every contact that has a subscription record for the specified audience and client. The export includes subscription status, verification timestamps, tag assignments, email validation results, suppression flags, unsubscribe details, and the contact's last `updated_at` timestamp — enough to recreate the full contact state in an external system or re-import it later. A companion JSON endpoint (`GET /api/contacts`) returns the same contact set as a paginated JSON array.
+
+## Authentication
+
+All requests must include a Bearer token issued for the target client.
+
+```
+Authorization: Bearer <client-api-key>
+```
+
+## Endpoints
+
+| Method | Path | Response |
+|---|---|---|
+| `GET` | `/api/contacts.csv` | CSV file download |
+| `GET` | `/api/contacts` | Paginated JSON array |
+
+## Query Parameters
+
+<ParamField query="audience" type="string" required>
+  Slug of the audience to export. Only contacts with a subscription for this
+  audience and the authenticated client are included.
+</ParamField>
+
+<ParamField query="client" type="string" required>
+  Slug of the authenticated client. Must match the token's client slug.
+</ParamField>
+
+<ParamField query="tags" type="string">
+  Comma-separated tag slugs to filter by. Only contacts that have **all**
+  listed tags are returned.
+</ParamField>
+
+<ParamField query="subscription_status" type="string">
+  Filter to contacts with this subscription status. One of `pending`,
+  `subscribed`, or `unsubscribed`.
+</ParamField>
+
+<ParamField query="verified" type="string">
+  Filter to verified (`true`) or unverified (`false`) contacts. Accepts the
+  same boolean strings as the CSV import (`true`, `1`, `yes`, `false`, `0`,
+  `no`).
+</ParamField>
+
+<ParamField query="email_validation_status" type="string">
+  Filter by email validation status. One of `unknown`, `valid`,
+  `invalid_syntax`, `no_mx`, `disposable`, `risky`, `manually_invalid`, or
+  `externally_validated`.
+</ParamField>
+
+<ParamField query="suppression" type="string">
+  Filter by suppression state. One of `none` (no suppression flags set), `any`
+  (at least one flag set), `global_unsubscribed`, `hard_bounced`, or
+  `complained`.
+</ParamField>
+
+<ParamField query="updated_since" type="string">
+  ISO 8601 datetime. Only contacts with `updated_at` at or after this timestamp
+  are returned. Useful for incremental sync.
+</ParamField>
+
+<ParamField query="limit" type="integer">
+  **CSV export:** Maximum rows to include. Defaults to `10000`, maximum
+  `10000`.
+
+  **JSON export:** Page size. Defaults to `50`, maximum `500`.
+</ParamField>
+
+<ParamField query="cursor" type="integer">
+  **JSON export only.** Contact ID used as a cursor for pagination. Pass the
+  `next_cursor` value from the previous response to fetch the next page.
+</ParamField>
+
+## CSV Response
+
+**Content-Type:** `text/csv; charset=utf-8`
+
+**Content-Disposition:** `attachment; filename="contacts.csv"`
+
+The CSV file includes the following columns in this order:
+
+| Column | Description |
+|---|---|
+| `email` | Normalized (lowercased) email address. |
+| `audience` | Audience slug for this export scope. |
+| `client` | Client slug for this export scope. |
+| `tags` | Semicolon-separated tag slugs assigned within this audience. |
+| `subscription_status` | `pending`, `subscribed`, or `unsubscribed`. |
+| `verified` | `True` or `False`. |
+| `verified_at` | ISO 8601 timestamp, or empty. |
+| `email_validation_status` | Validation status string. |
+| `email_validation_reason` | Human-readable validation reason. |
+| `email_validated_at` | ISO 8601 timestamp of last validation, or empty. |
+| `global_unsubscribed` | `True` or `False`. |
+| `hard_bounced` | `True` or `False`. |
+| `complained` | `True` or `False`. |
+| `unsubscribed` | `True` when `subscription_status` is `unsubscribed`. |
+| `unsubscribed_at` | ISO 8601 timestamp, or empty. |
+| `unsubscribe_reason` | Stored unsubscribe reason string. |
+| `updated_at` | ISO 8601 timestamp of the contact's last modification. |
+
+## JSON Response
+
+The JSON endpoint (`GET /api/contacts`) returns a paginated object:
+
+<ResponseField name="audience" type="string">Audience slug.</ResponseField>
+<ResponseField name="client" type="string">Client slug.</ResponseField>
+<ResponseField name="count" type="integer">Number of contacts in this page.</ResponseField>
+<ResponseField name="next_cursor" type="string | null">
+  Pass this value as the `cursor` query parameter to fetch the next page. `null`
+  when there are no more results.
+</ResponseField>
+<ResponseField name="contacts" type="object[]">
+  Array of contact objects, each containing the same fields as the upsert
+  response plus `subscription_status`, `unsubscribed`, `unsubscribed_at`,
+  `unsubscribe_reason`, `created_at`, and `updated_at`.
+</ResponseField>
+
+## Examples
+
+### Export all subscribed contacts as CSV
+
+```bash
+curl -G "https://datamailer.example.com/api/contacts.csv" \
+  -H "Authorization: Bearer dm_dtcnews_demo_newsletter_import_export_key" \
+  --data-urlencode "audience=dtc-courses" \
+  --data-urlencode "client=dtc-courses" \
+  --data-urlencode "subscription_status=subscribed" \
+  -o contacts.csv
+```
+
+### Export contacts updated in the last 24 hours as JSON
+
+```bash
+curl -G "https://datamailer.example.com/api/contacts" \
+  -H "Authorization: Bearer dm_dtcnews_demo_newsletter_import_export_key" \
+  --data-urlencode "audience=dtc-courses" \
+  --data-urlencode "client=dtc-courses" \
+  --data-urlencode "updated_since=2024-09-01T00:00:00Z"
+```
+
+### Sample CSV output
+
+```csv
+email,audience,client,tags,subscription_status,verified,verified_at,email_validation_status,email_validation_reason,email_validated_at,global_unsubscribed,hard_bounced,complained,unsubscribed,unsubscribed_at,unsubscribe_reason,updated_at
+learner@example.com,dtc-courses,dtc-courses,course-ml-zoomcamp;course-de-zoomcamp,subscribed,True,2024-09-01T10:00:00Z,unknown,,False,False,False,False,,,2024-09-01T10:00:00Z
+student@example.com,dtc-courses,dtc-courses,course-de-zoomcamp,subscribed,False,,valid,smtp-check,2024-09-02T08:30:00Z,False,False,False,False,,,2024-09-02T08:30:00Z
+```
+
+<Note>
+  The export is scoped to the authenticated client. Only contacts that have a
+  matching subscription record for both the specified `audience` and the
+  authenticated client are returned. Contacts that exist in Datamailer but have
+  never been subscribed through this client will not appear in the output.
+</Note>

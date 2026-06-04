@@ -1,0 +1,257 @@
+---
+title: "GET /api/contacts/{id}/history — Contact Email History"
+sidebarTitle: "Contact History"
+description: "GET /api/contacts/{id}/history returns scoped campaign recipients, transactional messages, and email events for a contact, with cursor-based pagination."
+---
+
+`GET /api/contacts/{contact_id}/history` gives your application a full scoped view of a contact's email activity: every campaign they were included in, every transactional message sent to them, and every email event attached to their contact record. Results are scoped to the authenticated client's audience so that one client cannot read another client's send history for the same contact.
+
+## Endpoint
+
+```
+GET /api/contacts/{contact_id}/history
+```
+
+## Authentication
+
+Requires a Bearer token for the client whose slug is passed as the `client` query parameter.
+
+```
+Authorization: Bearer <client-api-key>
+```
+
+## Path parameters
+
+<ParamField path="contact_id" type="integer" required>
+  The internal Datamailer contact ID. Must be a contact that has a client-scoped subscription record in the specified audience.
+</ParamField>
+
+## Query parameters
+
+<ParamField query="audience" type="string" required>
+  Slug of the audience to scope campaign recipient history to.
+</ParamField>
+
+<ParamField query="client" type="string" required>
+  Slug of the authenticated client. Scopes both campaign and transactional history.
+</ParamField>
+
+<ParamField query="limit" type="integer" default="50">
+  Maximum number of email events to return per page. Must be between `1` and `100`. Campaign recipients and transactional messages are also independently capped at `limit` rows — they are not paginated separately.
+</ParamField>
+
+<ParamField query="cursor" type="integer">
+  Email event ID to paginate from. Pass the value of `next_cursor` from the previous response to retrieve the next page of events. Omit for the first page.
+</ParamField>
+
+## Response
+
+<ResponseField name="contact_id" type="integer">
+  Internal Datamailer contact ID.
+</ResponseField>
+
+<ResponseField name="email" type="string">
+  Normalized (lowercased) email address of the contact.
+</ResponseField>
+
+<ResponseField name="audience" type="string">
+  Slug of the audience the history is scoped to.
+</ResponseField>
+
+<ResponseField name="client" type="string">
+  Slug of the client the history is scoped to.
+</ResponseField>
+
+<ResponseField name="campaign_recipients" type="object[]">
+  Campaign recipient records for this contact in campaigns belonging to the specified audience and client, ordered by `created_at` descending. Capped at `limit` rows.
+
+  <Expandable title="campaign_recipients item fields">
+    <ResponseField name="type" type="string">Always `"campaign_recipient"`.</ResponseField>
+    <ResponseField name="id" type="integer">Internal campaign recipient ID.</ResponseField>
+    <ResponseField name="created_at" type="string">ISO-8601 UTC timestamp when the recipient record was created.</ResponseField>
+    <ResponseField name="campaign" type="object">
+      Summary of the campaign this recipient belongs to.
+      <Expandable title="campaign fields">
+        <ResponseField name="id" type="integer">Campaign ID.</ResponseField>
+        <ResponseField name="subject" type="string">Campaign subject line.</ResponseField>
+        <ResponseField name="audience" type="string">Audience slug.</ResponseField>
+        <ResponseField name="client" type="string">Client slug.</ResponseField>
+      </Expandable>
+    </ResponseField>
+    <ResponseField name="email" type="string">Email address used for this send attempt.</ResponseField>
+    <ResponseField name="status" type="string">One of `pending`, `sent`, `skipped`, `failed`, `bounced`, `complained`, `unsubscribed`.</ResponseField>
+    <ResponseField name="skip_reason" type="string | null">Set when `status` is `skipped`. One of `unverified`, `invalid_email`, `global_unsubscribe`, `client_unsubscribe`, `audience_unsubscribe`, `hard_bounce`, `complaint`, `duplicate`, `suppressed`.</ResponseField>
+    <ResponseField name="sent_at" type="string | null">ISO-8601 UTC timestamp when the message was sent, or `null`.</ResponseField>
+    <ResponseField name="delivered_at" type="string | null">ISO-8601 UTC timestamp of confirmed delivery, or `null`.</ResponseField>
+    <ResponseField name="first_opened_at" type="string | null">ISO-8601 UTC timestamp of first open event, or `null`.</ResponseField>
+    <ResponseField name="first_clicked_at" type="string | null">ISO-8601 UTC timestamp of first click event, or `null`.</ResponseField>
+    <ResponseField name="open_count" type="integer">Total number of open events recorded.</ResponseField>
+    <ResponseField name="click_count" type="integer">Total number of click events recorded.</ResponseField>
+    <ResponseField name="last_error" type="string">Last delivery error message, or an empty string.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="transactional_messages" type="object[]">
+  Transactional messages sent to this contact by the authenticated client, ordered by `created_at` descending. Capped at `limit` rows. Not audience-scoped — includes all transactional sends from this client to this contact.
+
+  <Expandable title="transactional_messages item fields">
+    <ResponseField name="type" type="string">Always `"transactional_message"`.</ResponseField>
+    <ResponseField name="id" type="integer">Internal transactional message ID.</ResponseField>
+    <ResponseField name="created_at" type="string">ISO-8601 UTC timestamp when the message was created.</ResponseField>
+    <ResponseField name="client" type="string">Client slug.</ResponseField>
+    <ResponseField name="email" type="string">Recipient email address used for this send.</ResponseField>
+    <ResponseField name="template_key" type="string">Key of the email template used.</ResponseField>
+    <ResponseField name="status" type="string">One of `queued`, `sent`, `failed`, `skipped`, `bounced`, `complained`.</ResponseField>
+    <ResponseField name="subject" type="string">Rendered subject line of the message.</ResponseField>
+    <ResponseField name="sent_at" type="string | null">ISO-8601 UTC timestamp when the message was sent, or `null`.</ResponseField>
+    <ResponseField name="delivered_at" type="string | null">ISO-8601 UTC timestamp of confirmed delivery, or `null`.</ResponseField>
+    <ResponseField name="first_opened_at" type="string | null">ISO-8601 UTC timestamp of first open event, or `null`.</ResponseField>
+    <ResponseField name="first_clicked_at" type="string | null">ISO-8601 UTC timestamp of first click event, or `null`.</ResponseField>
+    <ResponseField name="open_count" type="integer">Total number of open events recorded.</ResponseField>
+    <ResponseField name="click_count" type="integer">Total number of click events recorded.</ResponseField>
+    <ResponseField name="last_error" type="string">Last delivery error message, or an empty string.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="events" type="object[]">
+  Email events for this contact scoped to the client and audience, ordered by event `id` descending. Paginated via `cursor` and `next_cursor`.
+
+  <Expandable title="events item fields">
+    <ResponseField name="type" type="string">Always `"email_event"`.</ResponseField>
+    <ResponseField name="id" type="integer">Internal email event ID. Use as `cursor` value for the next page.</ResponseField>
+    <ResponseField name="created_at" type="string">ISO-8601 UTC timestamp when the event was recorded.</ResponseField>
+    <ResponseField name="event_type" type="string">One of `queued`, `skipped`, `sent`, `delivered`, `open`, `click`, `unsubscribe`, `bounce`, `complaint`, `failed`.</ResponseField>
+    <ResponseField name="client" type="string | null">Client slug, or `null` for events not attached to a client.</ResponseField>
+    <ResponseField name="audience" type="string | null">Audience slug, or `null` for events not attached to an audience.</ResponseField>
+    <ResponseField name="campaign_id" type="integer | null">Associated campaign ID, or `null`.</ResponseField>
+    <ResponseField name="campaign_recipient_id" type="integer | null">Associated campaign recipient ID, or `null`.</ResponseField>
+    <ResponseField name="transactional_message_id" type="integer | null">Associated transactional message ID, or `null`.</ResponseField>
+    <ResponseField name="metadata" type="object">
+      Safe subset of event metadata. May include keys: `reason`, `error`, `scope`, `ses_message_id`, `bounce_type`, `complaint_feedback_type`, `source`. Empty values and keys outside this allowlist are omitted.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="next_cursor" type="string | null">
+  The event ID to pass as the `cursor` query parameter to retrieve the next page of events. `null` when there are no further pages.
+</ResponseField>
+
+## Example
+
+### Request
+
+```bash
+curl "https://datamailer.example.com/api/contacts/42/history?audience=dtc-courses&client=dtc-courses&limit=25" \
+  -H "Authorization: Bearer dm_dtccourses_demo_transactional_email_key"
+```
+
+### Response
+
+```json
+{
+  "contact_id": 42,
+  "email": "learner@example.com",
+  "audience": "dtc-courses",
+  "client": "dtc-courses",
+  "campaign_recipients": [
+    {
+      "type": "campaign_recipient",
+      "id": 1001,
+      "created_at": "2024-09-10T08:00:00Z",
+      "campaign": {
+        "id": 7,
+        "subject": "ML Zoomcamp — Week 2 kickoff",
+        "audience": "dtc-courses",
+        "client": "dtc-courses"
+      },
+      "email": "learner@example.com",
+      "status": "sent",
+      "skip_reason": null,
+      "sent_at": "2024-09-10T08:05:00Z",
+      "delivered_at": "2024-09-10T08:05:12Z",
+      "first_opened_at": "2024-09-10T09:14:00Z",
+      "first_clicked_at": null,
+      "open_count": 2,
+      "click_count": 0,
+      "last_error": ""
+    }
+  ],
+  "transactional_messages": [
+    {
+      "type": "transactional_message",
+      "id": 305,
+      "created_at": "2024-09-01T10:00:00Z",
+      "client": "dtc-courses",
+      "email": "learner@example.com",
+      "template_key": "registration-welcome",
+      "status": "sent",
+      "subject": "Welcome to ML Zoomcamp!",
+      "sent_at": "2024-09-01T10:00:05Z",
+      "delivered_at": "2024-09-01T10:00:18Z",
+      "first_opened_at": "2024-09-01T10:30:00Z",
+      "first_clicked_at": "2024-09-01T10:31:45Z",
+      "open_count": 3,
+      "click_count": 1,
+      "last_error": ""
+    }
+  ],
+  "events": [
+    {
+      "type": "email_event",
+      "id": 8842,
+      "created_at": "2024-09-10T09:14:00Z",
+      "event_type": "open",
+      "client": "dtc-courses",
+      "audience": "dtc-courses",
+      "campaign_id": 7,
+      "campaign_recipient_id": 1001,
+      "transactional_message_id": null,
+      "metadata": {}
+    },
+    {
+      "type": "email_event",
+      "id": 8101,
+      "created_at": "2024-09-01T10:31:45Z",
+      "event_type": "click",
+      "client": "dtc-courses",
+      "audience": null,
+      "campaign_id": null,
+      "campaign_recipient_id": null,
+      "transactional_message_id": 305,
+      "metadata": {}
+    }
+  ],
+  "next_cursor": null
+}
+```
+
+### Paginating events
+
+Pass `next_cursor` as the `cursor` parameter on the next request to retrieve older events:
+
+```bash
+curl "https://datamailer.example.com/api/contacts/42/history?audience=dtc-courses&client=dtc-courses&limit=25&cursor=8101" \
+  -H "Authorization: Bearer dm_dtccourses_demo_transactional_email_key"
+```
+
+<Note>
+  **Privacy:** secret tracking tokens, unsubscribe token hashes, and delivery link tokens stored on `CampaignRecipient` and `TransactionalMessage` records are never included in the history response. Only safe display fields are returned.
+</Note>
+
+<Note>
+  **Scope:** `campaign_recipients` is filtered to campaigns whose `audience` **and** `client` match the query parameters. `transactional_messages` is filtered by `client` only — transactional sends are not audience-scoped. `events` includes events where `client` matches or is null, **and** `audience` matches or is null, keeping provider webhook events (which may lack audience context) visible.
+</Note>
+
+## Error codes
+
+| Field | Error code | Meaning |
+|---|---|---|
+| `contact_id` | `not_found` | No contact with that ID, or no client subscription in this audience. Returns HTTP `404`. |
+| `audience` | `required` | `audience` was missing or blank. |
+| `audience` | `not_found` | No audience with that slug in the client's organization. |
+| `client` | `required` | `client` was missing or blank. |
+| `client` | `forbidden` | `client` does not match the authenticated client. Returns HTTP `403`. |
+| `limit` | `must_be_integer` | `limit` query parameter could not be parsed as an integer. |
+| `limit` | `must_be_between_1_and_100` | `limit` is outside the allowed range of 1–100. |
+| `cursor` | `must_be_integer` | `cursor` query parameter could not be parsed as an integer. |
+| `cursor` | `must_be_positive` | `cursor` is less than 1. |

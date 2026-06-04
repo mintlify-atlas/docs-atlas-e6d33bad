@@ -1,72 +1,112 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "Datamailer",
+  "theme": "luma",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
-  },
-  "favicon": "/favicon.svg",
-  "navigation": {
-    "pages": [
-      {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
-        ]
-      }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
+    "primary": "#2563EB",
+    "light": "#EFF6FF",
+    "dark": "#1E3A6E"
   },
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
     "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.mintlify.com"
+      "type": "github",
+      "href": "https://github.com/DataTalksClub/datamailer"
     }
-  },
-  "contextual": {
-    "options": [
-      "copy",
-      "view",
-      "chatgpt",
-      "claude",
-      "perplexity",
-      "mcp",
-      "cursor",
-      "vscode"
-    ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/DataTalksClub/datamailer"
     }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "configuration"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/data-model",
+              "concepts/audiences-and-clients",
+              "concepts/contacts-and-subscriptions",
+              "concepts/campaigns",
+              "concepts/transactional-email",
+              "concepts/tracking-and-events"
+            ]
+          },
+          {
+            "group": "Operator Guide",
+            "pages": [
+              "operator/managing-audiences",
+              "operator/managing-campaigns",
+              "operator/managing-contacts",
+              "operator/transactional-templates",
+              "operator/import-export"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/architecture",
+              "deployment/infrastructure",
+              "deployment/worker-contracts",
+              "deployment/operations"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "api/overview",
+              "api/authentication"
+            ]
+          },
+          {
+            "group": "Contacts",
+            "pages": [
+              "api/contacts/upsert",
+              "api/contacts/status",
+              "api/contacts/tags",
+              "api/contacts/verification",
+              "api/contacts/suppression",
+              "api/contacts/history"
+            ]
+          },
+          {
+            "group": "Subscriptions",
+            "pages": [
+              "api/subscriptions/subscribe",
+              "api/subscriptions/unsubscribe"
+            ]
+          },
+          {
+            "group": "Import & Export",
+            "pages": [
+              "api/import-export/json-import",
+              "api/import-export/csv-import",
+              "api/import-export/csv-export"
+            ]
+          },
+          {
+            "group": "Transactional",
+            "pages": [
+              "api/transactional/send"
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

@@ -1,0 +1,121 @@
+---
+title: "Authenticate with Datamailer Using Bearer API Keys"
+sidebarTitle: "Authentication"
+description: "How to create client API keys in the operator UI, pass them in the Authorization header, and manage named keys with revocation support."
+---
+
+Every endpoint under `/api` requires a Bearer API key. Keys are issued per client, stored only as hashes server-side, and identified by a safe `dm_<public_id>` prefix that can be shared in support tickets and audit logs without exposing the secret portion. When a request arrives, Datamailer matches the key's `public_id`, verifies the hash, and confirms the client is active before proceeding.
+
+## Authorization Header
+
+Pass the API key in the `Authorization` header on every request:
+
+```
+Authorization: Bearer <api-key>
+```
+
+A full key looks like:
+
+```
+dm_dtccourses_demo_transactional_email_key
+```
+
+The `dm_` prefix identifies the key as a Datamailer key. The segment after `dm_` up to the first underscore is the `public_id`. Only the hash of the full raw key is stored server-side — the secret portion is never retrievable after creation.
+
+## Creating an API Key
+
+<Steps>
+  <Step title="Log in as a staff user">
+    Navigate to `/admin/login/` and sign in with a staff account. Staff access is required to manage clients and API keys.
+  </Step>
+  <Step title="Open the client list">
+    Navigate to `/clients/`. Select the client you want to issue a key for, or create a new client with **New Client**.
+  </Step>
+  <Step title="Open the client detail page">
+    Click the client name to open its detail page at `/clients/{id}/`. This page lists all active and revoked API keys for the client.
+  </Step>
+  <Step title="Create the key">
+    Click **Create API Key** and enter a descriptive name. Names must be unique among the client's active keys, so use names that identify the integration — for example `Course platform transactional` or `Newsletter import/export`.
+  </Step>
+  <Step title="Copy the raw key immediately">
+    After the key is created, the full raw key is displayed **once**. Copy it and store it in a secrets manager before navigating away — it cannot be retrieved again.
+
+    <Warning>
+      Datamailer stores only a hash of the raw key. Once you leave the page, the secret portion is gone. If you lose the key, revoke it and create a new one.
+    </Warning>
+  </Step>
+</Steps>
+
+## Named Keys and Multiple Integrations
+
+A client can hold any number of active named keys. Use separate keys for separate integrations — for example one key for a course platform and another for a data pipeline — so that each can be rotated or revoked independently. Key names must be unique among the client's active (non-revoked) keys.
+
+The `public_id` prefix displayed as `dm_<public_id>` on the client detail page is safe to include in support tickets and audit log searches. It uniquely identifies the key without exposing the secret.
+
+## Revoking a Key
+
+Navigate to the client detail page at `/clients/{id}/` and click **Revoke** next to the key. This sets `revoked_at` on the key record, and the key is rejected immediately for all subsequent requests. Revoked keys remain visible on the detail page for audit purposes.
+
+The revocation URL follows the pattern:
+
+```
+/clients/{client_id}/api-keys/{key_id}/revoke/
+```
+
+## Key Scope
+
+Each API key is tied to a specific client. Requests authenticated with a key must reference the matching client slug in the request body or query string. If the `client` parameter does not match the authenticated client's slug, the API returns `403 Forbidden`.
+
+The authenticated client's organization also determines which audiences are accessible. Requests referencing an audience that belongs to a different organization are rejected with `400` and `audience: not_found`.
+
+## Example Requests
+
+### Check contact status
+
+```bash
+curl http://localhost:8000/api/contacts/status \
+  -H "Authorization: Bearer dm_dtccourses_demo_transactional_email_key" \
+  -G --data-urlencode "email=learner@example.com" \
+     --data-urlencode "audience=dtc-courses" \
+     --data-urlencode "client=dtc-courses"
+```
+
+### Using environment variables for different environments
+
+Set `DATAMAILER_URL` and `DATAMAILER_API_KEY` to run the same commands against any environment:
+
+```bash
+export DATAMAILER_URL="https://datamailer.example.com"
+export DATAMAILER_API_KEY="dm_your_key_here"
+
+curl $DATAMAILER_URL/api/contacts/status \
+  -H "Authorization: Bearer $DATAMAILER_API_KEY" \
+  -G --data-urlencode "email=test@example.com" \
+     --data-urlencode "audience=my-audience" \
+     --data-urlencode "client=my-client"
+```
+
+## Authentication Error Responses
+
+| Scenario | Status | `code` |
+|----------|--------|--------|
+| `Authorization` header absent | `401` | `missing_authorization` |
+| Header present but not `Bearer <token>` format | `401` | `invalid_authorization` |
+| Key not found or hash mismatch | `401` | `invalid_api_key` |
+| Client linked to the key is inactive | `401` | `inactive_client` |
+| `client` slug in request does not match authenticated client | `403` | `validation_error` with `client: forbidden` |
+
+All `401` and `403` responses include a JSON body:
+
+```json
+{
+  "error": {
+    "code": "invalid_api_key",
+    "message": "Authentication credentials were not accepted."
+  }
+}
+```
+
+<Note>
+  The in-app API reference at `/api-docs/` is pre-filled with the local demo keys and the configured base URL, making it the fastest way to explore authenticated endpoints without writing any `curl` commands.
+</Note>

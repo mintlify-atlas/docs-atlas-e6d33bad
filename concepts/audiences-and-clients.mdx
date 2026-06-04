@@ -1,0 +1,103 @@
+---
+title: "Audiences and Clients: Multi-Tenant Email Management"
+sidebarTitle: "Audiences & Clients"
+description: "How Datamailer organizes organizations, audiences, and clients to serve multiple distinct products from a shared contact infrastructure."
+---
+
+Datamailer is a multi-tenant email service that can serve several distinct products from a single deployment. The tenancy model has three levels: an **Organization** owns one or more **Audiences** and **Clients**. Audiences represent brand-level mailing lists that can be shared across products. Clients represent individual applications that authenticate with the API, send email, and manage subscriptions within those audiences. This layering lets you share contact infrastructure — and subscriber data — across products without mixing their mailing preferences.
+
+## Organizations
+
+An organization is the top-level owner. Every audience and every client belongs to exactly one organization. Organizations are identified by a unique slug and are typically created once during initial setup.
+
+| Field | Description |
+|---|---|
+| `slug` | URL-safe identifier, e.g. `datatalksclub` or `ai-shipping-labs` |
+| `name` | Human-readable display name |
+| `created_at` | Creation timestamp |
+
+**Real examples from production:**
+
+- `datatalksclub` — owns the DataTalksClub newsletter and courses products
+- `ai-shipping-labs` — owns the AI Shipping Labs platform
+
+---
+
+## Audiences
+
+An audience is a brand-level mailing list. It is scoped to one organization but can be shared by multiple clients. For example, both the `dtc-newsletter` and `dtc-courses` clients can subscribe contacts to the `datatalks-club` audience.
+
+| Field | Description |
+|---|---|
+| `organization` | Parent organization |
+| `slug` | Unique within the organization, e.g. `datatalks-club` |
+| `name` | Display name |
+| `created_at` | Creation timestamp |
+
+Audiences are the home for **tags** and **campaigns**. Every tag belongs to an audience, and every campaign targets one audience. Subscription records always reference an audience, which means a contact can have separate subscription states for each audience they interact with.
+
+**Real examples:**
+
+- `datatalks-club` — the main DataTalksClub audience, shared by the newsletter and courses clients
+- `ai-shipping-labs` — audience for the AI Shipping Labs platform
+
+---
+
+## Clients
+
+A client represents an application or product that integrates with Datamailer via the API. Clients are the unit of authentication: every API call is made on behalf of a client. Campaigns and transactional messages are always owned by a client.
+
+| Field | Description |
+|---|---|
+| `organization` | Parent organization |
+| `slug` | Unique within the organization, e.g. `dtc-newsletter` |
+| `name` | Display name |
+| `is_active` | Whether the client can make API calls |
+
+**Real examples:**
+
+- `dtc-newsletter` — DataTalksClub newsletter product
+- `dtc-courses` — DataTalksClub courses platform
+- `asl-platform` — AI Shipping Labs application
+
+Clients can share an audience. When `dtc-newsletter` and `dtc-courses` both subscribe a contact to the `datatalks-club` audience, two separate `Subscription` rows are created — one scoped to `(contact, datatalks-club, dtc-newsletter)` and one to `(contact, datatalks-club, dtc-courses)`. This means the contact can unsubscribe from courses without affecting their newsletter subscription.
+
+---
+
+## Subscription Scopes
+
+Subscription state is always scoped to a `(contact, audience, client)` triple. When a client is omitted, the subscription represents an audience-level preference that applies across all clients in that audience.
+
+```
+contact "alice@example.com"
+  └── audience: datatalks-club / client: dtc-newsletter  → subscribed
+  └── audience: datatalks-club / client: dtc-courses      → unsubscribed
+  └── audience: datatalks-club / client: (none)           → subscribed  [audience-level]
+```
+
+During a campaign send, the system checks both the client-scoped subscription and the audience-scoped subscription. If either is unsubscribed, the recipient is skipped.
+
+---
+
+## Client API Keys
+
+Clients authenticate with named Bearer API keys. Datamailer stores only the **hash** of each key — the plaintext is shown once at creation time and never again.
+
+| Field | Description |
+|---|---|
+| `name` | Human-readable label for the key (unique per active client) |
+| `key_hash` | Bcrypt or similar hash; plaintext is never stored |
+| `public_id` | Safe-to-display identifier, surfaced as `dm_<public_id>` in the UI and audit logs |
+| `notes` | Optional operator notes |
+| `last_used_at` | Timestamp of most recent authenticated request |
+| `revoked_at` | `NULL` means active; set to revoke |
+
+A client can have multiple active keys to support key rotation without downtime. Active key names must be unique per client (`revoked_at IS NULL` is part of the uniqueness constraint, so a revoked key's name can be reused).
+
+```http
+Authorization: Bearer dm_<public_id>...
+```
+
+<Tip>
+Use descriptive key names that reflect their purpose and environment, for example `production-sync`, `staging-api`, or `webhook-sender`. This makes audit logs and the key management UI much easier to read when you have multiple active keys per client.
+</Tip>

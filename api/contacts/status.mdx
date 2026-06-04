@@ -1,0 +1,216 @@
+---
+title: "GET /api/contacts/status — Check Contact Status"
+sidebarTitle: "Contact Status"
+description: "GET /api/contacts/status returns subscription state, verification, validation, suppression, and send eligibility for a given audience and client."
+---
+
+`GET /api/contacts/status` lets your application check exactly what Datamailer knows about a contact before sending email, showing a confirmation screen, or updating UI state. The response includes every field that determines whether a marketing or transactional send will succeed.
+
+## Endpoint
+
+```
+GET /api/contacts/status
+```
+
+## Authentication
+
+Requires a Bearer token for the client whose slug is passed as the `client` query parameter.
+
+```
+Authorization: Bearer <client-api-key>
+```
+
+## Query parameters
+
+<ParamField query="email" type="string" required>
+  The email address to look up. Normalized to lowercase before matching.
+</ParamField>
+
+<ParamField query="audience" type="string" required>
+  Slug of the audience to scope the subscription lookup to. Must belong to the authenticated client's organization.
+</ParamField>
+
+<ParamField query="client" type="string" required>
+  Slug of the authenticated client. Must exactly match the bearer token's client.
+</ParamField>
+
+## Response
+
+Returns HTTP `200` in all cases, including when the contact does not exist or is not visible to the authenticated client scope. Check `exists` before relying on other fields.
+
+<ResponseField name="contact_id" type="integer | null">
+  Internal Datamailer ID for the contact, or `null` when `exists` is `false`.
+</ResponseField>
+
+<ResponseField name="email" type="string">
+  Normalized (lowercased) email address. Returns the requested email when `exists` is `false`.
+</ResponseField>
+
+<ResponseField name="exists" type="boolean">
+  `true` only when a contact record exists **and** the authenticated client has a subscription record for that contact in this audience. Returns `false` and zeroed state otherwise, hiding whether a contact exists at all outside this client's scope.
+</ResponseField>
+
+<ResponseField name="verified" type="boolean">
+  Whether the contact has a `verified_at` timestamp at the contact level.
+</ResponseField>
+
+<ResponseField name="verified_at" type="string | null">
+  ISO-8601 UTC timestamp of contact-level verification, or `null`.
+</ResponseField>
+
+<ResponseField name="email_validation" type="object">
+  Current email validation state. All fields return zero values when `exists` is `false`.
+
+  <Expandable title="email_validation fields">
+    <ResponseField name="status" type="string">
+      One of `unknown`, `valid`, `invalid_syntax`, `no_mx`, `disposable`, `risky`, `manually_invalid`, `externally_validated`.
+    </ResponseField>
+    <ResponseField name="reason" type="string">
+      Provider-supplied reason string, or an empty string.
+    </ResponseField>
+    <ResponseField name="validated_at" type="string | null">
+      ISO-8601 UTC timestamp of the last validation update, or `null`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="global_unsubscribed" type="boolean">
+  Whether the contact has opted out of all marketing email globally.
+</ResponseField>
+
+<ResponseField name="hard_bounced" type="boolean">
+  Whether the contact's address has hard bounced.
+</ResponseField>
+
+<ResponseField name="complained" type="boolean">
+  Whether the contact has filed a spam complaint.
+</ResponseField>
+
+<ResponseField name="audience" type="object">
+  Audience-scoped subscription state.
+
+  <Expandable title="audience fields">
+    <ResponseField name="slug" type="string">The audience slug.</ResponseField>
+    <ResponseField name="subscribed" type="boolean">Whether the audience-level subscription status is `subscribed`.</ResponseField>
+    <ResponseField name="status" type="string | null">One of `pending`, `subscribed`, `unsubscribed`, or `null` if no audience subscription exists.</ResponseField>
+    <ResponseField name="verified" type="boolean">Whether the audience subscription has a `verified_at` timestamp.</ResponseField>
+    <ResponseField name="verified_at" type="string | null">ISO-8601 UTC timestamp of audience-subscription verification, or `null`.</ResponseField>
+    <ResponseField name="unsubscribed_at" type="string | null">ISO-8601 UTC timestamp when the audience-level unsubscription occurred, or `null`.</ResponseField>
+    <ResponseField name="unsubscribe_reason" type="string">Reason recorded at audience-level unsubscription, or an empty string.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="client" type="object">
+  Client-scoped subscription state. Same shape as `audience`.
+
+  <Expandable title="client fields">
+    <ResponseField name="slug" type="string">The client slug.</ResponseField>
+    <ResponseField name="subscribed" type="boolean">Whether the client-level subscription status is `subscribed`.</ResponseField>
+    <ResponseField name="status" type="string | null">One of `pending`, `subscribed`, `unsubscribed`, or `null` if no client subscription exists.</ResponseField>
+    <ResponseField name="verified" type="boolean">Whether the client subscription has a `verified_at` timestamp.</ResponseField>
+    <ResponseField name="verified_at" type="string | null">ISO-8601 UTC timestamp of client-subscription verification, or `null`.</ResponseField>
+    <ResponseField name="unsubscribed_at" type="string | null">ISO-8601 UTC timestamp when the client-level unsubscription occurred, or `null`.</ResponseField>
+    <ResponseField name="unsubscribe_reason" type="string">Reason recorded at client-level unsubscription, or an empty string.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="can_send_marketing" type="boolean">
+  Whether a marketing campaign email can currently be sent to this contact for this audience and client. `false` if the contact is suppressed, has a non-deliverable email validation status, is not subscribed, or has not passed verification on any subscription level.
+</ResponseField>
+
+<ResponseField name="can_send_transactional" type="boolean">
+  Whether a transactional email can currently be sent to this contact. `false` only if the contact has hard bounced or complained.
+</ResponseField>
+
+## Example
+
+### Request
+
+```bash
+curl "https://datamailer.example.com/api/contacts/status?email=learner%40example.com&audience=dtc-courses&client=dtc-courses" \
+  -H "Authorization: Bearer dm_dtccourses_demo_transactional_email_key"
+```
+
+### Response — contact found
+
+```json
+{
+  "contact_id": 42,
+  "email": "learner@example.com",
+  "exists": true,
+  "verified": true,
+  "verified_at": "2024-09-01T10:00:00Z",
+  "email_validation": {
+    "status": "externally_validated",
+    "reason": "client signup validation",
+    "validated_at": "2024-09-01T10:00:00Z"
+  },
+  "global_unsubscribed": false,
+  "hard_bounced": false,
+  "complained": false,
+  "audience": {
+    "slug": "dtc-courses",
+    "subscribed": false,
+    "status": null,
+    "verified": false,
+    "verified_at": null,
+    "unsubscribed_at": null,
+    "unsubscribe_reason": ""
+  },
+  "client": {
+    "slug": "dtc-courses",
+    "subscribed": true,
+    "status": "subscribed",
+    "verified": true,
+    "verified_at": "2024-09-01T10:00:00Z",
+    "unsubscribed_at": null,
+    "unsubscribe_reason": ""
+  },
+  "can_send_marketing": true,
+  "can_send_transactional": true
+}
+```
+
+### Response — contact not visible to this client
+
+```json
+{
+  "contact_id": null,
+  "email": "unknown@example.com",
+  "exists": false,
+  "verified": false,
+  "verified_at": null,
+  "email_validation": {
+    "status": "unknown",
+    "reason": "",
+    "validated_at": null
+  },
+  "global_unsubscribed": false,
+  "hard_bounced": false,
+  "complained": false,
+  "audience": {
+    "slug": "dtc-courses",
+    "subscribed": false,
+    "status": null,
+    "verified": false,
+    "verified_at": null,
+    "unsubscribed_at": null,
+    "unsubscribe_reason": ""
+  },
+  "client": {
+    "slug": "dtc-courses",
+    "subscribed": false,
+    "status": null,
+    "verified": false,
+    "verified_at": null,
+    "unsubscribed_at": null,
+    "unsubscribe_reason": ""
+  },
+  "can_send_marketing": false,
+  "can_send_transactional": false
+}
+```
+
+<Note>
+  **Privacy scoping:** if a contact exists in Datamailer but has no subscription record for the requested `client` within this `audience`, the response returns `exists: false` with all zeroed state. This prevents one client from discovering whether an email address belongs to another client's subscriber list.
+</Note>

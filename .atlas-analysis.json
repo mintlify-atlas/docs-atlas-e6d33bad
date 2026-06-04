@@ -1,0 +1,135 @@
+{
+  "projectType": "saas",
+  "projectName": "Datamailer",
+  "projectDescription": "A self-hosted Django mailing service for managing audiences, sending campaigns, delivering transactional emails, and tracking engagement events — designed to replace expensive third-party platforms like Mailchimp.",
+  "theme": "luma",
+  "primaryColor": "#2563EB",
+  "lightColor": "#EFF6FF",
+  "darkColor": "#1E3A6E",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "configuration"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/data-model",
+              "concepts/audiences-and-clients",
+              "concepts/contacts-and-subscriptions",
+              "concepts/campaigns",
+              "concepts/transactional-email",
+              "concepts/tracking-and-events"
+            ]
+          },
+          {
+            "group": "Operator Guide",
+            "pages": [
+              "operator/managing-audiences",
+              "operator/managing-campaigns",
+              "operator/managing-contacts",
+              "operator/transactional-templates",
+              "operator/import-export"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/architecture",
+              "deployment/infrastructure",
+              "deployment/worker-contracts",
+              "deployment/operations"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "api/overview",
+              "api/authentication"
+            ]
+          },
+          {
+            "group": "Contacts",
+            "pages": [
+              "api/contacts/upsert",
+              "api/contacts/status",
+              "api/contacts/tags",
+              "api/contacts/verification",
+              "api/contacts/suppression",
+              "api/contacts/history"
+            ]
+          },
+          {
+            "group": "Subscriptions",
+            "pages": [
+              "api/subscriptions/subscribe",
+              "api/subscriptions/unsubscribe"
+            ]
+          },
+          {
+            "group": "Import & Export",
+            "pages": [
+              "api/import-export/json-import",
+              "api/import-export/csv-import",
+              "api/import-export/csv-export"
+            ]
+          },
+          {
+            "group": "Transactional",
+            "pages": [
+              "api/transactional/send"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Audience and contact management with shared global identity across multiple clients",
+    "Campaign sending with recipient snapshots, status tracking, and engagement stats",
+    "Transactional email API for registration, password reset, and verification flows",
+    "Open tracking, click tracking, unsubscribe, bounce, and complaint handling",
+    "Client-scoped Bearer API authentication with named, revocable API keys",
+    "CSV and JSON bulk import/export with idempotent upserts",
+    "Mailchimp audience export migration support",
+    "SQS-backed worker queues and Lambda-based sending for scalable burst delivery",
+    "Amazon SES delivery with webhook processing for bounce and complaint notifications",
+    "Operator UI and Django admin for staff management"
+  ],
+  "publicApiSurface": [
+    "POST /api/contacts — Upsert contact",
+    "GET /api/contacts — List/export contacts (JSON)",
+    "GET /api/contacts.csv — Export contacts as CSV",
+    "GET /api/contacts/status — Get contact status",
+    "POST /api/contacts/imports — Bulk JSON import",
+    "POST /api/contacts/imports/csv — Bulk CSV import",
+    "PUT /api/contacts/{contact_id}/tags — Replace contact tags",
+    "POST /api/contacts/{contact_id}/tags/{tag_slug} — Add tag",
+    "DELETE /api/contacts/{contact_id}/tags/{tag_slug} — Remove tag",
+    "PATCH /api/contacts/{contact_id}/verification — Update verification",
+    "PATCH /api/contacts/{contact_id}/validation — Update email validation",
+    "PATCH /api/contacts/{contact_id}/suppression — Update suppression",
+    "GET /api/contacts/{contact_id}/history — Get contact history",
+    "POST /api/subscriptions/subscribe — Subscribe contact",
+    "POST /api/subscriptions/unsubscribe — Unsubscribe contact",
+    "POST /api/transactional/send — Send transactional email",
+    "GET /t/o/{tracking_token}.gif — Open tracking pixel",
+    "GET /t/c/{tracking_token} — Click tracking redirect",
+    "GET /unsubscribe/{unsubscribe_token} — Public unsubscribe page",
+    "POST /unsubscribe/{unsubscribe_token} — Process unsubscribe",
+    "POST /webhooks/ses — SES provider webhook"
+  ]
+}

@@ -1,0 +1,150 @@
+---
+title: "Transactional Email: Templates, Idempotency, and Suppression"
+sidebarTitle: "Transactional Email"
+description: "How Datamailer handles transactional sends: template rendering, idempotency key replay, hard suppression checks, and the SQS send queue."
+---
+
+Transactional email in Datamailer covers one-to-one messages triggered by user actions: account verification, password resets, purchase confirmations, and similar event-driven notifications. Unlike campaign sends, transactional messages are not filtered by marketing subscription state — a contact does not need to be subscribed to an audience to receive a transactional email. However, hard suppressions always apply: contacts that have generated a permanent bounce or a spam complaint will not receive any email, transactional or otherwise.
+
+---
+
+## Difference from Campaign Sends
+
+| Behaviour | Campaign | Transactional |
+|---|---|---|
+| Requires marketing subscription | ✅ Yes | ❌ No |
+| Respects global unsubscribe | ✅ Yes | ❌ No |
+| Blocked by hard bounce | ✅ Yes | ✅ Yes |
+| Blocked by complaint | ✅ Yes | ✅ Yes |
+| Audience/client scoped | ✅ Yes | Client only |
+| Idempotency key support | ❌ No | ✅ Yes |
+
+<Warning>
+Hard suppressions — `hard_bounced_at` and `complained_at` — block transactional email regardless of message importance. If a contact's address has permanently bounced or they have filed a spam complaint, Datamailer will record the message as `skipped` and return a `409 Conflict` response with `"code": "transactional_suppressed"`. Plan for this in your application's error handling.
+</Warning>
+
+---
+
+## Email Templates
+
+Templates are stored in the `EmailTemplate` model and scoped to a client.
+
+| Field | Description |
+|---|---|
+| `client` | The client that owns this template |
+| `key` | Slug-based identifier, unique per client (e.g., `welcome-email`) |
+| `name` | Human-readable display name |
+| `subject` | Django template string for the subject line |
+| `html_body` | Django template string for the HTML body |
+| `text_body` | Django template string for the plain-text body |
+| `required_context` | List of context key names that must be supplied at send time |
+| `example_context` | Sample context dict used for previewing the template |
+| `is_transactional` | Must be `true` to use via the transactional send API |
+| `is_active` | Inactive templates cannot be used for new sends |
+
+Subject, HTML body, and plain-text body are all rendered as Django template strings using the `context` dict provided in the API call. The rendered output is stored on the `TransactionalMessage` row at send time.
+
+The template catalog for staff users is available at `/templates/`.
+
+---
+
+## TransactionalMessage Statuses
+
+| Status | Meaning |
+|---|---|
+| `queued` | Message created and enqueued to SQS; Lambda will send |
+| `sent` | SES accepted the message |
+| `failed` | SES rejected or an unrecoverable error occurred |
+| `skipped` | Contact is hard-suppressed; message was not sent |
+| `bounced` | SES reported a hard bounce after delivery attempt |
+| `complained` | Recipient filed a spam complaint |
+
+---
+
+## Idempotency Keys
+
+Idempotency keys prevent duplicate sends when a client retries a failed API call. When a `idempotency_key` is supplied, Datamailer first checks for an existing `TransactionalMessage` with the same `(client_id, idempotency_key)` pair.
+
+- If one exists, the existing message is returned immediately with `"idempotent_replay": true` and `"enqueued": false`. No new message is created and no SQS message is sent.
+- If none exists, a new message is created and enqueued normally.
+
+The uniqueness constraint is enforced at the database layer:
+
+```sql
+UNIQUE (client_id, idempotency_key) WHERE idempotency_key != ''
+```
+
+If no `idempotency_key` is supplied in the request, Datamailer generates an internal key (`transactional-message:<uuid>`) to satisfy the constraint — but without a client-supplied key, replay protection is not available across retries.
+
+---
+
+## Template Context Validation
+
+Before a message is created, Datamailer validates that all `required_context` keys defined on the template are present in the `context` dict supplied in the API call. If any required keys are missing, the request fails with a validation error before any database write occurs.
+
+```python
+validate_template_context(template, payload["context"])
+```
+
+This check runs after the idempotency lookup (so replays are not re-validated) but before the contact is upserted or the suppression check is run.
+
+---
+
+## Transactional Send Result
+
+The API response includes a `TransactionalSendResult` payload:
+
+```json
+{
+  "message": {
+    "id": 42,
+    "email": "alice@example.com",
+    "status": "queued",
+    "template_key": "welcome-email",
+    "idempotency_key": "signup-abc123",
+    "created_at": "2024-06-01T12:00:00Z"
+  },
+  "idempotent_replay": false,
+  "enqueued": true
+}
+```
+
+| Field | Description |
+|---|---|
+| `message` | The `TransactionalMessage` record |
+| `idempotent_replay` | `true` if an existing message was returned due to key match |
+| `enqueued` | `true` if a new SQS message was dispatched |
+
+---
+
+## Send Flow
+
+<Steps>
+  <Step title="API call arrives">
+    The client application calls the transactional send endpoint with `email`, `template_key`, `context`, and optionally an `idempotency_key` and `metadata`.
+  </Step>
+  <Step title="Validate payload">
+    Datamailer validates the request fields: email format, template key presence, idempotency key format, and that `context` is a JSON object.
+  </Step>
+  <Step title="Resolve template">
+    The template is fetched by `(client, template_key)` where `is_transactional=true` and `is_active=true`. A missing or inactive template returns a `404`.
+  </Step>
+  <Step title="Idempotency check">
+    If an `idempotency_key` was supplied, Datamailer queries for an existing message. If found, it is returned immediately — no further processing occurs.
+  </Step>
+  <Step title="Validate template context">
+    All `required_context` keys declared on the template are checked against the supplied `context`. Missing keys raise a validation error.
+  </Step>
+  <Step title="Upsert contact">
+    The contact is created or updated by normalized email. No subscription record is required.
+  </Step>
+  <Step title="Suppression check">
+    `is_transactional_email_allowed(contact)` is evaluated. If the contact has a hard bounce or complaint on record, a `TransactionalMessage` row is created with `status=skipped` and the API returns `409 Conflict`.
+  </Step>
+  <Step title="Create message and enqueue">
+    A `TransactionalMessage` row is created with `status=queued`. The template subject, HTML body, and text body are rendered with the supplied context and stored on the message row. A `queued` `EmailEvent` is appended. On transaction commit, a payload is sent to the `transactional-email` SQS queue.
+  </Step>
+  <Step title="Lambda sends via SES">
+    The transactional Lambda worker consumes the SQS message, calls SES `SendEmail`, and updates the message row to `sent` with the returned `ses_message_id`.
+  </Step>
+</Steps>

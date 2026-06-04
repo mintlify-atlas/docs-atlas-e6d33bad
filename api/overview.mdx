@@ -1,0 +1,129 @@
+---
+title: "Datamailer REST API: Contacts, Subscriptions, and Transactional Email"
+sidebarTitle: "Overview"
+description: "Overview of the Datamailer client API: authentication, available endpoints, error format, and how to get a working API key for local testing."
+---
+
+The Datamailer client API lives under `/api` and lets client applications sync contacts, manage subscriptions, send transactional email, and query contact history. Every endpoint under `/api` requires a Bearer API key issued to an active client. Keys are created in the operator UI and are scoped to the issuing client's organization.
+
+## Base URL
+
+The base URL is configured by the `PUBLIC_BASE_URL` environment variable. When `DATAMAILER_API_DOCS_BASE_URL` is set it takes precedence for in-app documentation examples. The default for local development is:
+
+```
+http://localhost:8000
+```
+
+Override the URL at runtime when running examples against a staging or production environment:
+
+```bash
+export DATAMAILER_URL="https://datamailer.example.com"
+```
+
+<Note>
+  All `curl` examples in this reference default to `http://localhost:8000`. Set `DATAMAILER_URL` to a different base URL to test against any other environment without editing the commands.
+</Note>
+
+## In-App API Reference
+
+Datamailer ships a browsable API reference for staff users at `/api-docs/`. It renders endpoint documentation, copy-pasteable `curl` examples pre-filled with local demo keys, and request and response bodies. The machine-readable OpenAPI spec is available at `/api-docs/openapi.json`.
+
+Both routes require staff login at `/admin/login/`.
+
+## Local Demo Keys
+
+The local demo data fixtures create stable named API keys that work immediately after seeding. Use these for local development and in-app API exploration:
+
+| Key | Client | Purpose |
+|-----|--------|---------|
+| `dm_dtccourses_demo_transactional_email_key` | `dtc-courses` | Transactional email |
+| `dm_dtcnews_demo_newsletter_import_export_key` | `dtc-newsletter` | Newsletter import and export |
+| `dm_aslplatform_demo_transactional_email_key` | `asl-platform` | Transactional email |
+
+## Endpoint Index
+
+<CardGroup cols={2}>
+  <Card title="Contacts" icon="address-book">
+    Create or update contacts, check status, manage tags, update verification, validation, and suppression state, and retrieve scoped contact history.
+
+    | Method | Path |
+    |--------|------|
+    | `POST` | `/api/contacts` |
+    | `GET` | `/api/contacts/status` |
+    | `PATCH` | `/api/contacts/{id}/verification` |
+    | `PATCH` | `/api/contacts/{id}/validation` |
+    | `PATCH` | `/api/contacts/{id}/suppression` |
+    | `PUT` | `/api/contacts/{id}/tags` |
+    | `POST` | `/api/contacts/{id}/tags/{slug}` |
+    | `DELETE` | `/api/contacts/{id}/tags/{slug}` |
+    | `GET` | `/api/contacts/{id}/history` |
+  </Card>
+
+  <Card title="Subscriptions" icon="envelope">
+    Subscribe a contact to a client scope, or unsubscribe at client, audience, or global scope.
+
+    | Method | Path |
+    |--------|------|
+    | `POST` | `/api/subscriptions/subscribe` |
+    | `POST` | `/api/subscriptions/unsubscribe` |
+  </Card>
+
+  <Card title="Import & Export" icon="arrow-right-arrow-left">
+    Bulk-import contacts as JSON or CSV, and export the full contact list as JSON or CSV. Imports are idempotent by normalized email within an audience and client scope.
+
+    | Method | Path |
+    |--------|------|
+    | `POST` | `/api/contacts/imports` |
+    | `POST` | `/api/contacts/imports/csv` |
+    | `GET` | `/api/contacts` |
+    | `GET` | `/api/contacts.csv` |
+  </Card>
+
+  <Card title="Transactional" icon="paper-plane">
+    Send a transactional email from a named template. Idempotency keys prevent duplicate sends. Hard bounces and complaints block delivery.
+
+    | Method | Path |
+    |--------|------|
+    | `POST` | `/api/transactional/send` |
+  </Card>
+</CardGroup>
+
+## Error Response Format
+
+All API errors return a JSON body. Validation errors use a `fields` map so each invalid field is identified individually:
+
+```json
+{
+  "error": {
+    "code": "validation_error",
+    "fields": {
+      "email": "invalid",
+      "audience": "not_found"
+    }
+  }
+}
+```
+
+Authentication failures return an `error` object with a single `code` string:
+
+```json
+{
+  "error": {
+    "code": "missing_authorization",
+    "message": "Authentication credentials were not accepted."
+  }
+}
+```
+
+### HTTP Status Codes
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Success |
+| `202` | Accepted — transactional send queued |
+| `400` | Validation error — see `fields` for details |
+| `401` | Missing or malformed `Authorization` header |
+| `403` | Valid key, but the request references a client slug that does not match the authenticated client |
+| `404` | Contact or resource not found within the authenticated client scope |
+| `405` | Method not allowed |
+| `409` | Transactional send rejected — contact is suppressed (hard bounce or complaint) |

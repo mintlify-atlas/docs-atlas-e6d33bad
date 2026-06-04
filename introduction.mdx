@@ -1,0 +1,60 @@
+---
+title: "Datamailer: Self-Hosted Email for Multiple Client Apps"
+sidebarTitle: "Introduction"
+description: "Datamailer is a Django mailing service for audiences, campaigns, transactional email, and engagement tracking. Replace Mailchimp with SES-backed delivery."
+---
+
+Datamailer is a standalone, self-hosted mailing service built on Django. It gives you a single place to manage contacts, audiences, campaigns, and transactional email across multiple client applications — without paying per-contact fees to a third-party ESP. Instead of Mailchimp or similar platforms, Datamailer stores contacts in Postgres, queues sends through SQS, and delivers via Amazon SES, giving you full control over your data, your infrastructure, and your sending costs.
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Shared Audience Management" icon="users">
+    Contacts are global with per-audience, per-client subscriptions. One contact can be subscribed to multiple audiences across multiple client applications, each with independent subscription state, tags, and history.
+  </Card>
+  <Card title="Campaign Sends" icon="paper-plane">
+    Create and schedule campaigns targeting tagged audiences. Datamailer records one recipient row per intended contact and tracks delivery, opens, clicks, unsubscribes, bounces, and complaints.
+  </Card>
+  <Card title="Transactional Email API" icon="bolt">
+    Client apps send registration confirmations, email verifications, and password resets through a simple Bearer-authenticated REST API. Idempotency keys prevent duplicate sends.
+  </Card>
+  <Card title="Engagement Tracking" icon="chart-line">
+    Open tracking, click tracking, unsubscribe handling, bounce processing, and complaint handling are all built in. SES events flow back through SQS webhooks and update contact state automatically.
+  </Card>
+  <Card title="Multi-Client Support" icon="building">
+    Multiple client applications share a single Datamailer deployment. Each client authenticates with its own scoped API key, and all API access is isolated to that client's organisation and audience.
+  </Card>
+  <Card title="Operator UI & Admin" icon="sliders">
+    A Django staff UI covers audience management, campaign authoring, contact inspection, transactional template management, and client/API key administration — no separate dashboard required.
+  </Card>
+</CardGroup>
+
+## Architecture Overview
+
+Datamailer is intentionally built on well-understood, low-operational-overhead components:
+
+- **Django** — handles the product UI, REST API, open/click tracking endpoints, unsubscribe flows, and the Django admin.
+- **Postgres** — the source of truth for contacts, subscriptions, campaign recipient snapshots, transactional messages, and engagement event history.
+- **SQS** — provides durable queues for transactional sends, campaign sends, email events, and inbound SES webhook payloads.
+- **Lambda** — workers consume SQS queues for bursty campaign sending, transactional sending, and webhook/event processing.
+- **Amazon SES** — handles final delivery plus bounce, complaint, open, and click events where provider-side tracking is available.
+
+Infrastructure Terraform lives in the private `DataTalksClub/datamailer-infra` repository. This public repository contains the application code, tests, CloudFormation skeletons, and smoke scripts.
+
+<Note>
+  For local development, LocalStack can emulate SQS and SES so you can exercise the full send path without an AWS account. The quickstart guide covers running Datamailer with SQLite and the console email backend, which requires no AWS configuration at all.
+</Note>
+
+## Who It's For
+
+Datamailer is designed for teams that operate multiple web applications and want a single, self-controlled email platform instead of separate per-app Mailchimp or similar accounts:
+
+- **Multi-client SaaS platforms** — organisations like DataTalksClub that run a newsletter, course platforms, and partner products, each needing independent audience management and transactional email.
+- **Newsletter operators** — teams sending regular campaigns to segmented audiences who need open/click stats, unsubscribe handling, and bounce suppression without per-contact pricing.
+- **Platform builders** — developers who want a reusable, API-driven email service their client apps can call for transactional flows, with all contact state in one place.
+
+<Tip>
+  Datamailer was built to replace expensive Mailchimp-like sending for DataTalksClub and AI Shipping Labs while remaining reusable across any number of client apps. If you're paying for multiple email platform seats across separate products, Datamailer lets you consolidate them onto a single self-hosted deployment.
+</Tip>
+
+Ready to try it? Head over to the [Quickstart guide](/quickstart) to get Datamailer running locally in under five minutes.

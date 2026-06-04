@@ -1,0 +1,90 @@
+---
+title: "Managing Audiences, Tags, and Client API Keys"
+sidebarTitle: "Audiences"
+description: "Create and manage audiences, define tags for contact segmentation, and generate named API keys for client application integrations."
+---
+
+The operator UI gives staff members full control over the core organisational building blocks of Datamailer: audiences that group contacts, tags that label contacts within an audience, and clients with their associated API keys that let external applications talk to the service. All three are managed through the staff-only section of the operator UI and every change is recorded in the operator audit log.
+
+## Audiences
+
+An audience is the top-level container for contacts in Datamailer. Every subscription, tag, and campaign belongs to exactly one audience, and every audience belongs to one organization.
+
+**List all audiences** at `/audiences/`. The table shows member count, subscribed count, inactive count, suppressed count, and campaign count for each audience, giving an at-a-glance health summary.
+
+**Create a new audience** at `/audiences/new/`. Required fields:
+
+| Field | Notes |
+|---|---|
+| `organization` | The parent organization this audience belongs to. |
+| `name` | Human-readable display name, up to 255 characters. |
+| `slug` | URL-safe identifier, unique within the organization. Used in API calls and import commands. |
+
+**Edit an existing audience** at `/audiences/{id}/edit/`. Only `name` and `slug` are editable after creation. Changing a slug updates all future API calls but does not break existing subscriptions.
+
+**Audience detail** at `/audiences/{id}/` displays the full membership summary (members, subscribed, pending, unsubscribed, verified, unverified, inactive), a breakdown by email validation status and by tag, campaign history, and a live event stream that can be filtered by event type.
+
+## Tags
+
+Tags are audience-scoped labels you can attach to contacts. They are used both to organise your contact base and to drive campaign recipient filtering via include/exclude rules.
+
+**Create a tag** from the audience detail page or directly at `/audiences/{id}/tags/new/`. Required fields:
+
+| Field | Notes |
+|---|---|
+| `name` | Human-readable label, up to 120 characters. |
+| `slug` | URL-safe identifier, unique within the audience. Auto-derived from name if left blank. |
+
+**View a tag** at `/tags/{id}/` — shows the tag name, slug, parent audience, membership count, and audit history.
+
+**Edit a tag** at `/tags/{id}/edit/`. You can rename or reslug a tag at any time. The change propagates immediately to all contact memberships.
+
+<Note>
+Tags are scoped strictly to their audience. A tag created in one audience cannot be applied to contacts in a different audience, and tag slugs only need to be unique within an audience.
+</Note>
+
+## Clients
+
+A client represents an application or integration that accesses Datamailer through the API. Clients sit within an organization, and each client has its own pool of API keys and, optionally, its own set of transactional email templates.
+
+**List all clients** at `/clients/`. The table shows active and revoked key counts and when each key was last used.
+
+**Create a client** at `/clients/new/`:
+
+| Field | Notes |
+|---|---|
+| `organization` | Parent organization. Must match the audience the client will operate against. |
+| `name` | Human-readable name shown in the operator UI and audit logs. |
+| `slug` | URL-safe identifier, unique within the organization. Used in API calls and import commands. |
+| `is_active` | Inactive clients cannot authenticate, even with valid API keys. |
+
+**Edit a client** at `/clients/{id}/edit/`. All fields including `is_active` are editable after creation. Setting `is_active = false` immediately rejects all bearer-token requests for that client.
+
+### Client–Audience relationship
+
+A client does not have a hard foreign-key to a single audience in the database; instead, the audience is specified per API call (subscription, import, transactional send). However, because clients belong to an organization and audiences belong to the same organization, cross-organization requests are rejected. When you create a client, assign it to the same organization as the audience(s) it will access.
+
+## API Key Management
+
+Each client can have multiple named API keys. Keys authenticate API requests via a `Bearer` token in the `Authorization` header.
+
+**Create an API key** at `/clients/{id}/api-keys/create/`. Required fields:
+
+| Field | Notes |
+|---|---|
+| `name` | Descriptive label, e.g. `production` or `staging-webhook`. Must be unique among active keys for this client. |
+| `notes` | Optional free-text notes for your team. |
+
+After submission the raw key is displayed **once** on the client detail page and stored in your session. It is never retrievable again.
+
+<Warning>
+Copy the full API key immediately after generation. Datamailer stores only a hash of the key; the raw value is shown exactly once and cannot be recovered. If a key is lost, revoke it and create a new one.
+</Warning>
+
+Keys are displayed with the prefix `dm_` followed by the key's `public_id`, for example `dm_a1b2c3d4e5f6...`. This prefix is shown in the UI and logs, but is not the full bearer token.
+
+<Note>
+The `public_id` prefix (`dm_<public_id>`) is safe to share with your support team for key identification and audit purposes. It does not grant any access on its own — only the full raw key, presented as a `Bearer` token, is used for authentication.
+</Note>
+
+**Revoke an API key** at `/clients/{id}/api-keys/{key_id}/revoke/` (POST). Revocation is immediate and permanent; any in-flight requests using that key will receive a `401` response. Revoked keys remain visible in the client detail for audit purposes and display their `revoked_at` timestamp.

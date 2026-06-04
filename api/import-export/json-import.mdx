@@ -1,0 +1,219 @@
+---
+title: "POST /api/contacts/imports — Bulk JSON Contact Import"
+sidebarTitle: "JSON Import"
+description: "POST /api/contacts/imports bulk-imports contacts via JSON. Idempotent by normalized email and scope. Returns counts and per-item errors for invalid rows."
+---
+
+`POST /api/contacts/imports` accepts a JSON array of contact objects and upserts each one using the same logic as the single-contact `POST /api/contacts` endpoint. It is designed for bulk synchronization from external systems: invalid rows are reported in the response while valid rows are still committed, and re-sending the same records is safe because operations are idempotent by normalized email plus audience/client scope.
+
+## Authentication
+
+All requests must include a Bearer token issued for the target client.
+
+```
+Authorization: Bearer <client-api-key>
+```
+
+## Request
+
+**Method and path:** `POST /api/contacts/imports`
+
+**Content-Type:** `application/json`
+
+### Body Parameters
+
+<ParamField body="contacts" type="object[]" required>
+  Array of contact objects to import. Each object supports the same fields as
+  the upsert endpoint. `audience` and `client` can be provided at the top level
+  of the request body as defaults and will be merged into any item that omits
+  them.
+
+  <Expandable title="Per-contact fields">
+    <ParamField body="email" type="string" required>
+      Contact email address.
+    </ParamField>
+    <ParamField body="audience" type="string" required>
+      Audience slug. Can be inherited from the top-level `audience` field.
+    </ParamField>
+    <ParamField body="client" type="string" required>
+      Client slug. Can be inherited from the top-level `client` field.
+    </ParamField>
+    <ParamField body="status" type="string">
+      Subscription status: `pending` (default), `subscribed`, or `unsubscribed`.
+      Also accepted as `subscription_status`.
+    </ParamField>
+    <ParamField body="tags" type="string[]">
+      List of tag names to assign within the audience.
+    </ParamField>
+    <ParamField body="verified" type="boolean">
+      If `true`, stamps `verified_at` on the contact and subscription.
+    </ParamField>
+    <ParamField body="email_validation" type="object">
+      Object with `status` (one of `unknown`, `valid`, `invalid_syntax`,
+      `no_mx`, `disposable`, `risky`, `manually_invalid`,
+      `externally_validated`) and optional `reason` string.
+    </ParamField>
+    <ParamField body="suppression" type="object">
+      Object with boolean flags `global_unsubscribed`, `hard_bounced`, and
+      `complained`. Setting any flag to `true` stamps the corresponding
+      timestamp. Flags cannot be cleared to `false` via this field once set.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="audience" type="string">
+  Default audience slug applied to all items that do not include their own
+  `audience` field.
+</ParamField>
+
+<ParamField body="client" type="string">
+  Default client slug applied to all items that do not include their own
+  `client` field.
+</ParamField>
+
+<ParamField body="dry_run" type="boolean">
+  If `true`, validates all rows and returns projected actions (`would_create`,
+  `would_update`) without writing any data to the database. Defaults to `false`.
+</ParamField>
+
+<ParamField body="idempotency_key" type="string">
+  Optional string stored alongside the import result for your own reference.
+  Not used for deduplication by Datamailer.
+</ParamField>
+
+## Idempotency
+
+Operations are idempotent by normalized email combined with the audience/client scope. Re-importing the same contact record produces an `unchanged` action and does not overwrite timestamps. Within a single request, the first occurrence of a duplicate email+scope key is processed and later duplicates are `skipped` with `reason: duplicate_input`.
+
+## Partial Errors
+
+Invalid rows are collected and returned in the `errors` array without stopping the import. All valid rows in the same request are committed regardless of which other rows fail.
+
+## Response
+
+HTTP `200 OK`. The response contains overall counts, per-item results, and per-item errors.
+
+<ResponseField name="dry_run" type="boolean">
+  Echoes the `dry_run` flag from the request.
+</ResponseField>
+
+<ResponseField name="idempotency_key" type="string">
+  Echoes the `idempotency_key` from the request, or empty string.
+</ResponseField>
+
+<ResponseField name="counts" type="object">
+  <Expandable title="count fields">
+    <ResponseField name="total" type="integer">Total number of items in the input array.</ResponseField>
+    <ResponseField name="created" type="integer">Items that resulted in a new contact or subscription record.</ResponseField>
+    <ResponseField name="updated" type="integer">Items that modified an existing contact or subscription.</ResponseField>
+    <ResponseField name="unchanged" type="integer">Items that matched existing records exactly and required no writes.</ResponseField>
+    <ResponseField name="skipped" type="integer">Items skipped due to being duplicates within the input batch.</ResponseField>
+    <ResponseField name="invalid" type="integer">Items that failed validation and were not imported.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="results" type="object[]">
+  Per-item result entries for all processed (non-error) rows, including skipped duplicates.
+
+  <Expandable title="result item fields">
+    <ResponseField name="index" type="integer">Zero-based index of this item in the input array.</ResponseField>
+    <ResponseField name="item" type="integer">One-based item number for human-readable display.</ResponseField>
+    <ResponseField name="email" type="string">Normalized email for this item.</ResponseField>
+    <ResponseField name="action" type="string">One of `created`, `updated`, `unchanged`, `skipped`, `would_create`, `would_update`.</ResponseField>
+    <ResponseField name="contact" type="object">Full contact payload, present for non-dry-run processed rows.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="errors" type="object[]">
+  Per-item validation error entries for rows that could not be imported.
+
+  <Expandable title="error item fields">
+    <ResponseField name="index" type="integer">Zero-based index in the input array.</ResponseField>
+    <ResponseField name="item" type="integer">One-based item number.</ResponseField>
+    <ResponseField name="email" type="string">Normalized email if one could be parsed, otherwise empty.</ResponseField>
+    <ResponseField name="errors" type="object">Map of field name to error code, e.g. `{"email": "invalid"}`.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Example
+
+### Request
+
+```bash
+curl -X POST https://datamailer.example.com/api/contacts/imports \
+  -H "Authorization: Bearer dm_dtcnews_demo_newsletter_import_export_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "audience": "dtc-courses",
+    "client": "dtc-courses",
+    "contacts": [
+      {
+        "email": "learner@example.com",
+        "status": "subscribed",
+        "tags": ["course-ml-zoomcamp"],
+        "verified": true
+      },
+      {
+        "email": "student@example.com",
+        "status": "subscribed",
+        "tags": ["course-de-zoomcamp"],
+        "email_validation": {
+          "status": "valid",
+          "reason": "smtp-check"
+        }
+      },
+      {
+        "email": "not-an-email",
+        "status": "subscribed"
+      }
+    ]
+  }'
+```
+
+### Response
+
+```json
+{
+  "dry_run": false,
+  "idempotency_key": "",
+  "counts": {
+    "total": 3,
+    "created": 1,
+    "updated": 1,
+    "unchanged": 0,
+    "skipped": 0,
+    "invalid": 1
+  },
+  "results": [
+    {
+      "index": 0,
+      "item": 1,
+      "email": "learner@example.com",
+      "action": "unchanged",
+      "contact": { "contact_id": 42, "email": "learner@example.com" }
+    },
+    {
+      "index": 1,
+      "item": 2,
+      "email": "student@example.com",
+      "action": "created",
+      "contact": { "contact_id": 43, "email": "student@example.com" }
+    }
+  ],
+  "errors": [
+    {
+      "index": 2,
+      "item": 3,
+      "email": "",
+      "errors": { "email": "invalid" }
+    }
+  ]
+}
+```
+
+<Note>
+  For large datasets, send contacts in batches of 100 rows or fewer per request.
+  Each batch is processed in a single database transaction per row, so smaller
+  batches reduce lock contention and make partial-error recovery easier to manage
+  on your end.
+</Note>

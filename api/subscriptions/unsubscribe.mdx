@@ -1,0 +1,237 @@
+---
+title: "POST /api/subscriptions/unsubscribe — Unsubscribe a Contact"
+sidebarTitle: "Unsubscribe"
+description: "POST /api/subscriptions/unsubscribe sets a contact's subscription status to unsubscribed at client, audience, or global scope."
+---
+
+`POST /api/subscriptions/unsubscribe` records an unsubscribe for an existing or new contact. The required `scope` field controls how broadly the unsubscribe applies — from a single client integration, across every client in an audience, or globally across all marketing email managed by Datamailer. The contact is upserted by normalized email if it does not exist yet, so this endpoint is safe to call even for addresses that have never subscribed.
+
+## Authentication
+
+All requests must include a Bearer token issued for the target client.
+
+```
+Authorization: Bearer <client-api-key>
+```
+
+## Request
+
+**Method and path:** `POST /api/subscriptions/unsubscribe`
+
+**Content-Type:** `application/json`
+
+### Body Parameters
+
+<ParamField body="email" type="string" required>
+  The contact's email address. Trimmed and validated; looked up by its
+  normalized (lowercased) form.
+</ParamField>
+
+<ParamField body="audience" type="string" required>
+  Slug of the audience the contact belongs to. Must exist within the
+  authenticated client's organization.
+</ParamField>
+
+<ParamField body="client" type="string" required>
+  Slug of the authenticated client. Must match the token's client slug.
+  Cross-client writes return HTTP 403.
+</ParamField>
+
+<ParamField body="scope" type="string" required>
+  How broadly to apply the unsubscribe. One of:
+
+  - `client` — marks the client-scoped subscription as `unsubscribed`.
+  - `audience` — marks every client subscription within the audience as
+    `unsubscribed`.
+  - `global` — sets `global_unsubscribed_at` on the contact, blocking all
+    marketing email managed by Datamailer.
+</ParamField>
+
+<ParamField body="reason" type="string">
+  Optional free-text reason for the unsubscribe. Stored in
+  `unsubscribe_reason` on the affected subscription(s). Defaults to an empty
+  string.
+</ParamField>
+
+## Scope Behavior
+
+<CardGroup cols={3}>
+  <Card title="client" icon="user">
+    Calls `unsubscribe_contact` with the specific client argument. Only the
+    subscription record for this audience + client pair is updated.
+  </Card>
+  <Card title="audience" icon="users">
+    Calls `unsubscribe_contact` without a client argument. All client
+    subscriptions within the audience are set to `unsubscribed`, and an
+    audience-level subscription record is created if one does not exist.
+  </Card>
+  <Card title="global" icon="globe">
+    Sets `global_unsubscribed_at` on the contact record. This flag is checked
+    before every marketing send and blocks delivery across all audiences and all
+    clients managed by this Datamailer instance.
+  </Card>
+</CardGroup>
+
+## Response
+
+HTTP `200 OK` on success. The response is the standard contact status payload plus a `scope` echo field.
+
+<ResponseField name="contact_id" type="integer">
+  Internal ID of the contact record.
+</ResponseField>
+
+<ResponseField name="email" type="string">
+  Normalized email address.
+</ResponseField>
+
+<ResponseField name="exists" type="boolean">
+  `true` when the contact has a subscription visible to the authenticated client.
+</ResponseField>
+
+<ResponseField name="verified" type="boolean">
+  Whether the contact or subscription is verified.
+</ResponseField>
+
+<ResponseField name="verified_at" type="string | null">
+  ISO 8601 timestamp, or `null`.
+</ResponseField>
+
+<ResponseField name="global_unsubscribed" type="boolean">
+  `true` when `global_unsubscribed_at` is set on the contact — this will be
+  `true` after a `global` scope unsubscribe.
+</ResponseField>
+
+<ResponseField name="hard_bounced" type="boolean">
+  `true` when the contact has a hard bounce on record.
+</ResponseField>
+
+<ResponseField name="complained" type="boolean">
+  `true` when the contact has filed a spam complaint.
+</ResponseField>
+
+<ResponseField name="audience" type="object">
+  <Expandable title="audience subscription fields">
+    <ResponseField name="slug" type="string">Audience slug.</ResponseField>
+    <ResponseField name="subscribed" type="boolean">Whether the audience-level subscription is active.</ResponseField>
+    <ResponseField name="status" type="string | null">One of `pending`, `subscribed`, or `unsubscribed`.</ResponseField>
+    <ResponseField name="verified" type="boolean">Whether the audience-level subscription is verified.</ResponseField>
+    <ResponseField name="verified_at" type="string | null">ISO 8601 timestamp, or `null`.</ResponseField>
+    <ResponseField name="unsubscribed_at" type="string | null">ISO 8601 timestamp set when the unsubscribe was processed.</ResponseField>
+    <ResponseField name="unsubscribe_reason" type="string">Stored reason.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="client" type="object">
+  <Expandable title="client subscription fields">
+    <ResponseField name="slug" type="string">Client slug.</ResponseField>
+    <ResponseField name="subscribed" type="boolean">Whether the client-level subscription is active.</ResponseField>
+    <ResponseField name="status" type="string | null">One of `pending`, `subscribed`, or `unsubscribed`.</ResponseField>
+    <ResponseField name="verified" type="boolean">Whether the client-level subscription is verified.</ResponseField>
+    <ResponseField name="verified_at" type="string | null">ISO 8601 timestamp, or `null`.</ResponseField>
+    <ResponseField name="unsubscribed_at" type="string | null">ISO 8601 timestamp set when the unsubscribe was processed.</ResponseField>
+    <ResponseField name="unsubscribe_reason" type="string">Stored reason.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="can_send_marketing" type="boolean">
+  Whether marketing email can currently be sent to this contact from this client.
+</ResponseField>
+
+<ResponseField name="can_send_transactional" type="boolean">
+  Whether transactional email can currently be sent to this contact.
+</ResponseField>
+
+<ResponseField name="scope" type="string">
+  Echo of the `scope` value that was applied: `client`, `audience`, or `global`.
+</ResponseField>
+
+## Examples
+
+### Unsubscribe from a single client
+
+```bash
+curl -X POST https://datamailer.example.com/api/subscriptions/unsubscribe \
+  -H "Authorization: Bearer dm_dtccourses_demo_transactional_email_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "learner@example.com",
+    "audience": "dtc-courses",
+    "client": "dtc-courses",
+    "scope": "client",
+    "reason": "user-requested"
+  }'
+```
+
+### Unsubscribe from the whole audience
+
+```bash
+curl -X POST https://datamailer.example.com/api/subscriptions/unsubscribe \
+  -H "Authorization: Bearer dm_dtccourses_demo_transactional_email_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "learner@example.com",
+    "audience": "dtc-courses",
+    "client": "dtc-courses",
+    "scope": "audience",
+    "reason": "unsubscribed-all-courses"
+  }'
+```
+
+### Global unsubscribe
+
+```bash
+curl -X POST https://datamailer.example.com/api/subscriptions/unsubscribe \
+  -H "Authorization: Bearer dm_dtccourses_demo_transactional_email_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "learner@example.com",
+    "audience": "dtc-courses",
+    "client": "dtc-courses",
+    "scope": "global",
+    "reason": "list-unsubscribe-header"
+  }'
+```
+
+### Response (global scope example)
+
+```json
+{
+  "contact_id": 42,
+  "email": "learner@example.com",
+  "exists": true,
+  "verified": true,
+  "verified_at": "2024-09-01T10:00:00Z",
+  "global_unsubscribed": true,
+  "hard_bounced": false,
+  "complained": false,
+  "audience": {
+    "slug": "dtc-courses",
+    "subscribed": false,
+    "status": null,
+    "verified": false,
+    "verified_at": null,
+    "unsubscribed_at": null,
+    "unsubscribe_reason": ""
+  },
+  "client": {
+    "slug": "dtc-courses",
+    "subscribed": true,
+    "status": "subscribed",
+    "verified": true,
+    "verified_at": "2024-09-01T10:00:00Z",
+    "unsubscribed_at": null,
+    "unsubscribe_reason": ""
+  },
+  "can_send_marketing": false,
+  "can_send_transactional": true,
+  "scope": "global"
+}
+```
+
+<Warning>
+  The `global` scope sets `global_unsubscribed_at` on the contact record, which
+  blocks all marketing email across every audience and every client managed by
+  this Datamailer instance. This cannot be reversed via the unsubscribe
+  endpoint. To clear a global unsubscribe, use `PATCH
+  /api/contacts/{contact_id}/suppression` with `"global_unsubscribed": false`.
+</Warning>

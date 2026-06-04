@@ -1,0 +1,224 @@
+---
+title: "POST /api/subscriptions/subscribe — Subscribe a Contact"
+sidebarTitle: "Subscribe"
+description: "POST /api/subscriptions/subscribe creates or updates a contact and sets their subscription status to subscribed for the specified audience and client."
+---
+
+`POST /api/subscriptions/subscribe` is the fastest path to marking a contact as subscribed. It upserts the contact by normalized email, then calls `subscribe_contact` which sets `status=subscribed` and stamps `verified_at=now` on the client-scoped subscription. If you need finer control over subscription status, verified flag, or suppression fields on the same request, use the upsert endpoint (`POST /api/contacts`) instead.
+
+## Authentication
+
+All requests must include a Bearer token issued for the target client.
+
+```
+Authorization: Bearer <client-api-key>
+```
+
+## Request
+
+**Method and path:** `POST /api/subscriptions/subscribe`
+
+**Content-Type:** `application/json`
+
+### Body Parameters
+
+<ParamField body="email" type="string" required>
+  The contact's email address. Trimmed and validated before processing. The
+  contact is looked up and upserted by its normalized (lowercased) form.
+</ParamField>
+
+<ParamField body="audience" type="string" required>
+  Slug of the audience to subscribe the contact to. Must belong to the same
+  organization as the authenticated client.
+</ParamField>
+
+<ParamField body="client" type="string" required>
+  Slug of the client making the request. Must match the authenticated client's
+  own slug — cross-client writes are forbidden (HTTP 403).
+</ParamField>
+
+<ParamField body="tags" type="string[]">
+  Optional list of tag names to assign to the contact within this audience.
+  Each entry must be a non-empty string. Tags are audience-scoped and created
+  automatically if they do not already exist.
+</ParamField>
+
+## Behavior
+
+<Steps>
+  <Step title="Validate scope">
+    Confirm that `email`, `audience`, and `client` are present and that `client`
+    matches the authenticated token's client slug.
+  </Step>
+  <Step title="Upsert contact">
+    Create the contact record if one does not already exist for the normalized
+    email address.
+  </Step>
+  <Step title="Subscribe">
+    Call `subscribe_contact`, which creates or updates the client-scoped
+    `Subscription` record with `status=subscribed` and stamps `verified_at` to
+    the current UTC time.
+  </Step>
+  <Step title="Assign tags">
+    For each name in `tags`, look up or create the audience-scoped tag, then
+    create the `ContactTag` membership.
+  </Step>
+  <Step title="Return contact payload">
+    Return the full contact object including subscription state and tags.
+  </Step>
+</Steps>
+
+## Response
+
+HTTP `200 OK` on success.
+
+<ResponseField name="contact_id" type="integer">
+  Internal ID of the contact record.
+</ResponseField>
+
+<ResponseField name="email" type="string">
+  Normalized (lowercased) email address stored for this contact.
+</ResponseField>
+
+<ResponseField name="exists" type="boolean">
+  `true` when the contact has a subscription visible to the authenticated client.
+</ResponseField>
+
+<ResponseField name="verified" type="boolean">
+  `true` when the contact or subscription has a non-null `verified_at`
+  timestamp.
+</ResponseField>
+
+<ResponseField name="verified_at" type="string | null">
+  ISO 8601 timestamp of verification, or `null`.
+</ResponseField>
+
+<ResponseField name="email_validation" type="object">
+  <Expandable title="email_validation fields">
+    <ResponseField name="status" type="string">
+      One of `unknown`, `valid`, `invalid_syntax`, `no_mx`, `disposable`,
+      `risky`, `manually_invalid`, or `externally_validated`.
+    </ResponseField>
+    <ResponseField name="reason" type="string">
+      Human-readable reason stored alongside the validation status.
+    </ResponseField>
+    <ResponseField name="validated_at" type="string | null">
+      ISO 8601 timestamp of the last validation run, or `null`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="global_unsubscribed" type="boolean">
+  `true` when the contact has a global marketing unsubscribe on record.
+</ResponseField>
+
+<ResponseField name="hard_bounced" type="boolean">
+  `true` when the contact has a hard bounce on record.
+</ResponseField>
+
+<ResponseField name="complained" type="boolean">
+  `true` when the contact has filed a spam complaint.
+</ResponseField>
+
+<ResponseField name="audience" type="object">
+  <Expandable title="audience subscription fields">
+    <ResponseField name="slug" type="string">Audience slug.</ResponseField>
+    <ResponseField name="subscribed" type="boolean">Whether the audience-level subscription is active.</ResponseField>
+    <ResponseField name="status" type="string | null">One of `pending`, `subscribed`, or `unsubscribed`.</ResponseField>
+    <ResponseField name="verified" type="boolean">Whether the audience-level subscription is verified.</ResponseField>
+    <ResponseField name="verified_at" type="string | null">ISO 8601 timestamp, or `null`.</ResponseField>
+    <ResponseField name="unsubscribed_at" type="string | null">ISO 8601 timestamp, or `null`.</ResponseField>
+    <ResponseField name="unsubscribe_reason" type="string">Stored reason string, empty if none.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="client" type="object">
+  <Expandable title="client subscription fields">
+    <ResponseField name="slug" type="string">Client slug.</ResponseField>
+    <ResponseField name="subscribed" type="boolean">Whether the client-level subscription is active.</ResponseField>
+    <ResponseField name="status" type="string | null">One of `pending`, `subscribed`, or `unsubscribed`.</ResponseField>
+    <ResponseField name="verified" type="boolean">Whether the client-level subscription is verified.</ResponseField>
+    <ResponseField name="verified_at" type="string | null">ISO 8601 timestamp, or `null`.</ResponseField>
+    <ResponseField name="unsubscribed_at" type="string | null">ISO 8601 timestamp, or `null`.</ResponseField>
+    <ResponseField name="unsubscribe_reason" type="string">Stored reason string, empty if none.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="can_send_marketing" type="boolean">
+  `true` when the contact is eligible to receive marketing emails from this
+  client right now. Requires a verified subscription and no active suppression.
+</ResponseField>
+
+<ResponseField name="can_send_transactional" type="boolean">
+  `true` when the contact is not hard-bounced or complained, meaning
+  transactional sends are allowed.
+</ResponseField>
+
+<ResponseField name="tags" type="string[]">
+  Sorted list of tag slugs assigned to this contact within the audience.
+</ResponseField>
+
+## Example
+
+### Request
+
+```bash
+curl -X POST https://datamailer.example.com/api/subscriptions/subscribe \
+  -H "Authorization: Bearer dm_dtccourses_demo_transactional_email_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "learner@example.com",
+    "audience": "dtc-courses",
+    "client": "dtc-courses",
+    "tags": ["course-ml-zoomcamp"]
+  }'
+```
+
+### Response
+
+```json
+{
+  "contact_id": 42,
+  "email": "learner@example.com",
+  "exists": true,
+  "verified": true,
+  "verified_at": "2024-09-01T10:00:00Z",
+  "email_validation": {
+    "status": "unknown",
+    "reason": "",
+    "validated_at": null
+  },
+  "global_unsubscribed": false,
+  "hard_bounced": false,
+  "complained": false,
+  "audience": {
+    "slug": "dtc-courses",
+    "subscribed": false,
+    "status": null,
+    "verified": false,
+    "verified_at": null,
+    "unsubscribed_at": null,
+    "unsubscribe_reason": ""
+  },
+  "client": {
+    "slug": "dtc-courses",
+    "subscribed": true,
+    "status": "subscribed",
+    "verified": true,
+    "verified_at": "2024-09-01T10:00:00Z",
+    "unsubscribed_at": null,
+    "unsubscribe_reason": ""
+  },
+  "can_send_marketing": true,
+  "can_send_transactional": true,
+  "tags": ["course-ml-zoomcamp"]
+}
+```
+
+<Tip>
+  Use `POST /api/contacts` (the upsert endpoint) when you need to set a specific
+  subscription `status` (e.g., `pending`), control the `verified` flag
+  independently, or write email validation and suppression data in the same
+  request. The subscribe endpoint always sets `status=subscribed` and stamps
+  `verified_at`.
+</Tip>

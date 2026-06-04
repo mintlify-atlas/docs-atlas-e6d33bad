@@ -1,0 +1,106 @@
+---
+title: "Managing Transactional Email Templates"
+sidebarTitle: "Templates"
+description: "Create and manage transactional email templates with Django template syntax. Define required context variables for validation before sending."
+---
+
+Transactional templates are the building blocks for one-to-one triggered emails — password resets, welcome messages, verification links, and similar system-initiated sends. Each template belongs to a client and is identified by a unique `key` that client applications pass in API calls. The template catalog in the operator UI lists all active transactional templates with their context requirements and recent send activity.
+
+## The Template Catalog
+
+Browse all transactional templates at `/templates/`. The catalog can be filtered by client using the dropdown at the top of the page. Each row in the catalog shows:
+
+- **Key** — the slug used by client applications in API calls (e.g. `registration-welcome`)
+- **Name** — a human-readable label for the operator UI
+- **Client** — the client this template belongs to
+- **Required context** — the named variables that must be provided in every send request
+- **Send counts** — queued, sent, skipped, and failed message totals
+
+## Template Fields
+
+When creating or editing a template (via the Django admin), the following fields are available:
+
+| Field | Type | Notes |
+|---|---|---|
+| `key` | Slug | Unique within a client. Passed by client apps in `POST /api/transactional/send`. |
+| `name` | String | Human-readable label shown in the catalog. |
+| `description` | Text | Optional notes for your team. |
+| `subject` | String | Email subject line. Supports Django template syntax. |
+| `html_body` | Text | Full HTML body. Supports Django template syntax. |
+| `text_body` | Text | Plain-text fallback. Supports Django template syntax. |
+| `required_context` | JSON list | Named variables that must be present in every API send request. |
+| `example_context` | JSON dict | Example values used for preview rendering on the template detail page. |
+| `is_transactional` | Boolean | Must be `true` for the template to appear in the catalog and accept API sends. |
+| `is_active` | Boolean | Inactive templates are not accessible via the API. |
+| `client` | FK | The client this template belongs to. |
+
+## Template Rendering
+
+Template bodies and subjects are rendered using Django's `render_template_string` function, which supports the full Django template language. Variables are injected from the `context` object provided in the API request.
+
+<CodeGroup>
+```django Subject template
+Account verified — welcome to {{ product_name }}!
+```
+
+```django HTML body template
+<p>Hi {{ first_name }},</p>
+<p>
+  Your email address has been verified. You can now sign in to
+  <a href="{{ login_url }}">{{ product_name }}</a>.
+</p>
+<p>Thanks,<br>The {{ product_name }} team</p>
+```
+
+```django Text body template
+Hi {{ first_name }},
+
+Your email address has been verified. You can now sign in at:
+{{ login_url }}
+
+Thanks,
+The {{ product_name }} team
+```
+</CodeGroup>
+
+## Required Context and Validation
+
+The `required_context` field is a JSON list of variable names (or objects with `name` and `description` keys) that must be present and non-empty in every API send request. Each entry can be a bare string or a dictionary:
+
+```json
+[
+  "first_name",
+  { "name": "login_url", "description": "Full URL to the login page" },
+  "product_name"
+]
+```
+
+When a client application calls `POST /api/transactional/send`, the catalog service validates that every required context key is present and non-empty in the `context` payload. If any key is missing or blank, the request is rejected with a validation error listing the offending fields (`context.<name>: required`).
+
+## Template Detail
+
+The template detail page at `/templates/{id}/` shows:
+
+- Full template content (subject, HTML body, text body)
+- A rendered preview using `example_context` values
+- The list of required context variables with optional descriptions
+- The last 10 transactional messages sent using this template, with status badges and metadata
+
+## Common Template Key Examples
+
+Template keys are set by staff in the operator UI. They must exactly match the `template_key` value passed in API calls. By convention, keys are lowercase, hyphen-separated slugs:
+
+| Key | Typical use |
+|---|---|
+| `registration-welcome` | Sent after a new user registers |
+| `email-verification` | Contains a link for the user to verify their address |
+| `password-reset` | Contains a one-time password reset link |
+| `order-confirmation` | E-commerce order receipt |
+
+<Warning>
+The API returns a `404` response if the requested `template_key` does not exist for the authenticated client, or if the matching template has `is_active = false`. Ensure the key is created in the operator UI and `is_active` is checked before deploying client code that references it.
+</Warning>
+
+<Note>
+Template keys are owned by staff operators, not by client developers. If a client application needs a new template, a staff member must create it in the operator UI (or Django admin) first, then share the exact `key` string with the client team. Mismatches between the key in the codebase and the key in the database are the most common cause of `404` errors on the transactional send endpoint.
+</Note>

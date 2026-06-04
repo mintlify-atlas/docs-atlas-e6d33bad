@@ -1,0 +1,155 @@
+---
+title: "Contacts, Subscriptions, and Email Validation"
+sidebarTitle: "Contacts & Subscriptions"
+description: "How Datamailer manages global contact identity, audience subscriptions, verification, email validation status, and suppression rules."
+---
+
+Datamailer separates **global contact identity** from **per-audience subscription state**. A `Contact` row holds the canonical email address and any hard suppression signals that apply everywhere — hard bounces, complaints, and global unsubscribes. A `Subscription` row holds the opt-in status for a specific audience and client combination. This design means a single database lookup tells you whether you can send to someone globally, while subscription queries are scoped only to the audience you care about.
+
+---
+
+## Contact Fields
+
+Every email address in the system corresponds to exactly one `Contact` row, uniquely identified by its `normalized_email`.
+
+| Field | Type | Description |
+|---|---|---|
+| `email` | string | Original email address as provided |
+| `normalized_email` | string | Casefolded version; the uniqueness key |
+| `verified_at` | datetime \| null | When the contact completed email verification |
+| `email_validation_status` | enum | Result of external or manual validation (see below) |
+| `email_validation_reason` | string | Free-text reason from the validation provider |
+| `email_validated_at` | datetime \| null | When the validation status was last set |
+| `global_unsubscribed_at` | datetime \| null | Set when the contact opts out of all marketing email |
+| `hard_bounced_at` | datetime \| null | Set on the first hard bounce from any send |
+| `complained_at` | datetime \| null | Set when SES reports a spam complaint |
+
+### Email Normalization
+
+Normalization is applied automatically in the model's `save()` method:
+
+```python
+self.normalized_email = self.email.casefold()
+```
+
+This ensures that `Alice@Example.com`, `alice@example.com`, and `ALICE@EXAMPLE.COM` all resolve to the same contact. The `normalized_email` field carries the unique database constraint; the original `email` field is preserved for display.
+
+---
+
+## Email Validation Status
+
+The `email_validation_status` field records the result of validation, whether performed by an external service or set manually by an operator.
+
+| Status | Value | Meaning |
+|---|---|---|
+| `unknown` | default | No validation has been run |
+| `valid` | deliverable | Address passed all validation checks |
+| `invalid_syntax` | non-deliverable | Address fails RFC syntax checks |
+| `no_mx` | non-deliverable | Domain has no MX record |
+| `disposable` | non-deliverable | Disposable/temporary email domain |
+| `risky` | non-deliverable | Flagged as risky by validation provider |
+| `manually_invalid` | non-deliverable | Operator manually marked as invalid |
+| `externally_validated` | deliverable | Validated by an external system |
+
+Statuses are grouped into two sets in `contacts.py`:
+
+```python
+NON_DELIVERABLE_EMAIL_VALIDATION_STATUSES = {
+    EmailValidationStatus.INVALID_SYNTAX,
+    EmailValidationStatus.NO_MX,
+    EmailValidationStatus.DISPOSABLE,
+    EmailValidationStatus.RISKY,
+    EmailValidationStatus.MANUALLY_INVALID,
+}
+
+DELIVERABLE_EMAIL_VALIDATION_STATUSES = {
+    EmailValidationStatus.VALID,
+    EmailValidationStatus.EXTERNALLY_VALIDATED,
+}
+```
+
+Contacts with a non-deliverable status are skipped during campaign snapshotting with the `invalid_email` skip reason.
+
+---
+
+## Subscriptions
+
+A `Subscription` row represents opt-in state for a specific `(contact, audience, client)` scope. The same contact can be subscribed to one client and unsubscribed from another within the same audience.
+
+| Field | Description |
+|---|---|
+| `contact` | The global contact identity |
+| `audience` | The brand-level mailing list |
+| `client` | The application (nullable for audience-level subscriptions) |
+| `status` | `pending`, `subscribed`, or `unsubscribed` |
+| `verified_at` | When the subscription was confirmed |
+| `unsubscribed_at` | When the unsubscribe was recorded |
+| `unsubscribe_reason` | Free-text reason, e.g. `public_unsubscribe` |
+
+### Subscription Statuses
+
+| Status | Meaning |
+|---|---|
+| `pending` | Contact has been added but not yet confirmed |
+| `subscribed` | Contact has opted in and can receive marketing email |
+| `unsubscribed` | Contact has opted out of this audience/client scope |
+
+The uniqueness constraint `(contact, audience, client)` ensures at most one subscription record per scope. When `client` is null, a separate constraint (`unique_audience_only_subscription_scope`) enforces uniqueness for audience-level subscriptions.
+
+---
+
+## Unsubscribe Scopes
+
+Datamailer supports three unsubscribe scopes, controlled by the `scope` parameter on the public unsubscribe page:
+
+| Scope | What it does |
+|---|---|
+| `client` | Unsubscribes from the sending client within the audience |
+| `audience` | Unsubscribes from the entire audience across all clients |
+| `global` | Sets `global_unsubscribed_at` on the contact — blocks all marketing email from all clients |
+
+---
+
+## Suppression Rules
+
+The `contacts.py` service exposes two functions that encode the send-eligibility rules:
+
+```python
+def is_transactional_email_allowed(contact):
+    """Blocks sends to hard-bounced or complained contacts."""
+    return not get_contact_suppression_state(contact).has_hard_suppression
+
+def is_marketing_email_allowed(contact, audience, client=None):
+    """Blocks sends when any marketing suppression is active,
+    when email validation is non-deliverable, or when the contact
+    is not subscribed for the given audience/client scope."""
+    suppression = get_contact_suppression_state(contact)
+    if suppression.has_marketing_suppression:
+        return False
+    if has_invalid_email_validation(contact):
+        return False
+    return Subscription.objects.filter(
+        contact=contact, audience=audience, client=client,
+        status=SubscriptionStatus.SUBSCRIBED,
+    ).exists()
+```
+
+In plain terms:
+
+- **Hard suppression** (`hard_bounced_at` or `complained_at` is set) blocks both transactional and marketing email.
+- **Marketing suppression** additionally includes `global_unsubscribed_at` and non-deliverable email validation statuses.
+- A valid, active subscription is also required for marketing email.
+
+---
+
+## Tags
+
+Tags are audience-scoped labels that can be applied to contacts. They are used in campaign targeting via `include_tags` and `exclude_tags` filters on a campaign.
+
+| Field | Description |
+|---|---|
+| `audience` | The audience this tag belongs to |
+| `name` | Display name (e.g., `Python Developers`) |
+| `slug` | URL-safe identifier, auto-generated from name via `slugify` |
+
+Tags are attached to contacts through the `ContactTag` join table. The `(contact, tag)` pair is unique, and `(audience, slug)` is unique within the tag table. Tags from one audience are never visible to other audiences.

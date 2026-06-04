@@ -1,0 +1,253 @@
+---
+title: "Import and Export Contacts: CSV, JSON, and Mailchimp"
+sidebarTitle: "Import & Export"
+description: "Bulk import contacts via CSV or management commands, migrate from Mailchimp audience exports, and export full contact lists as CSV."
+---
+
+Datamailer provides multiple paths for moving contact data in and out of the system. Operators working server-side can use Django management commands to import from CSV files or Mailchimp export archives and to export contacts as CSV. Client applications can use the REST API to perform the same operations programmatically. All import paths support dry-run validation before committing data.
+
+## Management Commands
+
+Management commands are run on the server from the Django project root using `python manage.py <command>`.
+
+### `import_audience_csv`
+
+Imports contacts from a local CSV file into a specified audience. The CSV must contain an `email` column. All other columns are optional.
+
+**Required arguments:**
+
+| Argument | Description |
+|---|---|
+| `--csv PATH` | Path to the CSV file to import. |
+| `--organization SLUG` | Organization slug that owns the target audience. |
+| `--audience SLUG` | Audience slug within the organization. |
+
+**Optional arguments:**
+
+| Argument | Description |
+|---|---|
+| `--client SLUG` | Client slug to attach subscriptions to. Omit for audience-only subscriptions. |
+| `--dry-run` | Validate and report without writing any database records. |
+| `--report PATH` | Write the JSON import report to a file instead of stdout. |
+
+**Supported CSV columns:**
+
+| Column | Type | Notes |
+|---|---|---|
+| `email` | String | **Required.** Contact email address. |
+| `tags` | String | Semicolon-separated tag names, e.g. `early-access;beta-tester`. |
+| `verified` | Boolean | Marks the contact as email-verified. |
+| `subscription_status` | String | `pending`, `subscribed`, or `unsubscribed`. |
+| `email_validation_status` | String | One of the validation status values. |
+| `email_validation_reason` | String | Human-readable reason accompanying the validation status. |
+| `unsubscribed` | Boolean | Shorthand for `subscription_status=unsubscribed`. |
+| `global_unsubscribed` | Boolean | Sets the global unsubscribe flag. |
+| `hard_bounced` | Boolean | Sets the hard bounce flag. |
+| `complained` | Boolean | Sets the spam complaint flag. |
+| `suppressed` | Boolean | Treated as a global marketing suppression (`global_unsubscribed=true`). |
+| `unsubscribe_reason` | String | Stored with the subscription when unsubscribing. |
+
+Boolean columns accept `true`, `false`, `yes`, `no`, `1`, `0`, `y`, `n`, `on`, `off` (case-insensitive). Tags must be non-empty slug-safe values of 120 characters or fewer.
+
+<CodeGroup>
+```bash Basic import
+python manage.py import_audience_csv \
+  --csv contacts.csv \
+  --organization acme \
+  --audience newsletter
+```
+
+```bash Import with client and dry run
+python manage.py import_audience_csv \
+  --csv contacts.csv \
+  --organization acme \
+  --audience newsletter \
+  --client acme-web \
+  --dry-run \
+  --report import-report.json
+```
+</CodeGroup>
+
+### `import_mailchimp_zip`
+
+Migrates contacts from a Mailchimp audience export archive. Mailchimp exports a ZIP file containing separate CSV files for subscribed, unsubscribed, and cleaned contacts. This command reads all three categories in a single pass without extracting archive contents to disk.
+
+**Required arguments:**
+
+| Argument | Description |
+|---|---|
+| `--zip PATH` | Path to the Mailchimp audience export `.zip` file. |
+| `--organization SLUG` | Organization slug that owns the target audience. |
+| `--audience SLUG` | Datamailer audience slug. |
+| `--client SLUG` | Datamailer client slug (required for Mailchimp imports). |
+
+**Optional arguments:**
+
+| Argument | Description |
+|---|---|
+| `--dry-run` | Validate and report without writing any database records. |
+| `--report PATH` | Write the JSON import report to a file instead of stdout. |
+
+The importer applies state from each CSV category as follows:
+
+- **subscribed** — marks the contact as verified and `externally_validated`; sets subscription status to `subscribed`.
+- **unsubscribed** — sets `global_unsubscribed_at` on the contact; sets subscription status to `unsubscribed` with the original unsubscribe reason.
+- **cleaned** — sets `hard_bounced_at` on the contact; sets email validation status to `manually_invalid` (reason: `mailchimp_cleaned`); sets subscription status to `unsubscribed`.
+
+Mailchimp tags (from the `TAGS` column) are imported as Datamailer tags in the target audience. Source metadata (LEID, EUID, OPTIN_TIME, etc.) is stored in `ContactSourceMetadata` for traceability.
+
+<Steps>
+  <Step title="Download the Mailchimp export">
+    In your Mailchimp account, navigate to **Audience → All contacts → Export audience** and download the ZIP file to your server.
+  </Step>
+  <Step title="Transfer the ZIP to your server">
+    Use `scp`, a shared volume, or your deployment workflow to place the ZIP file in an accessible path on the server running Datamailer.
+  </Step>
+  <Step title="Create the target audience and client">
+    Ensure the target organization, audience, and client already exist in Datamailer. Use the operator UI or run `import_audience_csv` with an empty CSV first to validate slugs.
+  </Step>
+  <Step title="Run a dry run first">
+    Execute the import with `--dry-run` to validate the archive and review the report before writing any data.
+    ```bash
+    python manage.py import_mailchimp_zip \
+      --zip mailchimp_export.zip \
+      --organization acme \
+      --audience newsletter \
+      --client acme-web \
+      --dry-run \
+      --report dry-run-report.json
+    ```
+  </Step>
+  <Step title="Run the live import">
+    Once the dry-run report looks correct, remove `--dry-run` to write the contacts.
+    ```bash
+    python manage.py import_mailchimp_zip \
+      --zip mailchimp_export.zip \
+      --organization acme \
+      --audience newsletter \
+      --client acme-web \
+      --report import-report.json
+    ```
+  </Step>
+  <Step title="Review the import report">
+    Open `import-report.json` to verify counts for `created`, `updated`, `unchanged`, `invalid_rows`, and the per-category breakdown (`subscribed_rows`, `unsubscribed_rows`, `cleaned_rows`). Investigate any rows in `invalid_rows`.
+  </Step>
+</Steps>
+
+<CodeGroup>
+```bash Dry run
+python manage.py import_mailchimp_zip \
+  --zip mailchimp_export.zip \
+  --organization acme \
+  --audience newsletter \
+  --client acme-web \
+  --dry-run
+```
+
+```bash Live import with report
+python manage.py import_mailchimp_zip \
+  --zip mailchimp_export.zip \
+  --organization acme \
+  --audience newsletter \
+  --client acme-web \
+  --report import-report.json
+```
+</CodeGroup>
+
+### `export_contacts_csv`
+
+Exports contacts for a specific client/audience scope to a CSV file. Supports the same filtering options as the API export endpoint.
+
+**Required arguments:**
+
+| Argument | Description |
+|---|---|
+| `--organization SLUG` | Organization slug. |
+| `--audience SLUG` | Audience slug within the organization. |
+| `--client SLUG` | Client slug within the organization. |
+| `--output PATH` | Output file path for the CSV. |
+
+**Optional filters:**
+
+| Argument | Description |
+|---|---|
+| `--tags` | Comma-separated tag slugs to require. |
+| `--subscription-status` | `pending`, `subscribed`, or `unsubscribed`. |
+| `--verified` | `true` or `false`. |
+| `--email-validation-status` | Validation status value to filter by. |
+| `--suppression` | `none`, `any`, `global_unsubscribed`, `hard_bounced`, or `complained`. |
+| `--updated-since` | ISO 8601 datetime lower bound for `updated_at`. |
+| `--limit` | Maximum rows to export, up to 10,000 (default 10,000). |
+
+The exported CSV includes the columns: `email`, `audience`, `client`, `tags`, `subscription_status`, `verified`, `verified_at`, `email_validation_status`, `email_validation_reason`, `email_validated_at`, `global_unsubscribed`, `hard_bounced`, `complained`, `unsubscribed`, `unsubscribed_at`, `unsubscribe_reason`, `updated_at`.
+
+<CodeGroup>
+```bash Export all subscribed contacts
+python manage.py export_contacts_csv \
+  --organization acme \
+  --audience newsletter \
+  --client acme-web \
+  --subscription-status subscribed \
+  --output subscribed-contacts.csv
+```
+
+```bash Export with suppression and validation filters
+python manage.py export_contacts_csv \
+  --organization acme \
+  --audience newsletter \
+  --client acme-web \
+  --suppression none \
+  --verified true \
+  --output clean-contacts.csv
+```
+</CodeGroup>
+
+## API Import and Export
+
+Client applications can perform the same import and export operations over the REST API using a bearer token. See the [API Overview](/api/overview) for full request and response schemas.
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/contacts/imports` | `POST` | Bulk import contacts as a JSON array. Supports `dry_run` and `idempotency_key`. |
+| `/api/contacts/imports/csv` | `POST` | Bulk import contacts as a CSV file upload or inline CSV string. |
+| `/api/contacts.csv` | `GET` | Export contacts as CSV with optional filters. |
+
+## Dry Run Support
+
+Both `import_audience_csv` and `import_mailchimp_zip` support `--dry-run`. In dry-run mode:
+
+- All CSV parsing and validation is performed normally.
+- No database records are created or updated.
+- The JSON report is emitted with `"dry_run": true` and row-level actions marked as `would_import`.
+- Invalid rows and their error messages are included in the report exactly as they would be in a live run.
+
+Use dry runs before any significant bulk operation to catch format errors, missing required values, or slug mismatches before they reach the database.
+
+## Import Report
+
+Both import commands emit a structured JSON report either to stdout or to the path specified by `--report`. The report includes:
+
+```json
+{
+  "dry_run": false,
+  "target": { "organization": "acme", "audience": "newsletter", "client": "acme-web" },
+  "columns": { "required": ["email"], "supported": ["email", "tags", "..."] },
+  "counts": {
+    "rows_seen": 1500,
+    "valid_rows": 1498,
+    "processed_rows": 1495,
+    "created": 1200,
+    "updated": 295,
+    "unchanged": 0,
+    "duplicate_input_rows": 3,
+    "invalid_rows": 2
+  },
+  "invalid_rows": [...],
+  "duplicate_rows": [...],
+  "row_results": [...]
+}
+```
+
+<Warning>
+When the same email address appears more than once in an import CSV, the **first valid row wins** and all subsequent rows for that normalised email are skipped. Skipped duplicates are listed in the `duplicate_rows` array of the report with the row number of the kept entry. To update a contact with new data, ensure the target row appears before any duplicates in the file.
+</Warning>
