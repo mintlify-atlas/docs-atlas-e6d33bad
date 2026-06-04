@@ -1,7 +1,7 @@
 ---
-title: "POST /api/subscriptions/unsubscribe — Unsubscribe a Contact"
+title: "POST /api/subscriptions/unsubscribe — Unsubscribe Contact"
 sidebarTitle: "Unsubscribe"
-description: "POST /api/subscriptions/unsubscribe sets a contact's subscription status to unsubscribed at client, audience, or global scope."
+description: "POST /api/subscriptions/unsubscribe records an unsubscribe at client, audience, or global scope and returns the updated contact status payload."
 ---
 
 `POST /api/subscriptions/unsubscribe` records an unsubscribe for an existing or new contact. The required `scope` field controls how broadly the unsubscribe applies — from a single client integration, across every client in an audience, or globally across all marketing email managed by Datamailer. The contact is upserted by normalized email if it does not exist yet, so this endpoint is safe to call even for addresses that have never subscribed.
@@ -94,6 +94,22 @@ HTTP `200 OK` on success. The response is the standard contact status payload pl
 
 <ResponseField name="verified_at" type="string | null">
   ISO 8601 timestamp, or `null`.
+</ResponseField>
+
+<ResponseField name="email_validation" type="object">
+  Current email validation state for the contact.
+
+  <Expandable title="email_validation fields">
+    <ResponseField name="status" type="string">
+      One of `unknown`, `valid`, `invalid_syntax`, `no_mx`, `disposable`, `risky`, `manually_invalid`, or `externally_validated`.
+    </ResponseField>
+    <ResponseField name="reason" type="string">
+      Provider-supplied reason string, or an empty string.
+    </ResponseField>
+    <ResponseField name="validated_at" type="string | null">
+      ISO 8601 timestamp of the last validation update, or `null`.
+    </ResponseField>
+  </Expandable>
 </ResponseField>
 
 <ResponseField name="global_unsubscribed" type="boolean">
@@ -201,6 +217,11 @@ curl -X POST https://datamailer.example.com/api/subscriptions/unsubscribe \
   "exists": true,
   "verified": true,
   "verified_at": "2024-09-01T10:00:00Z",
+  "email_validation": {
+    "status": "unknown",
+    "reason": "",
+    "validated_at": null
+  },
   "global_unsubscribed": true,
   "hard_bounced": false,
   "complained": false,

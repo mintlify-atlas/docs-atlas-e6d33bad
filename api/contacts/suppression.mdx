@@ -1,5 +1,5 @@
 ---
-title: "PATCH /api/contacts/{id}/suppression — Update Suppression State"
+title: "PATCH /api/contacts/{id}/suppression — Manage Suppression"
 sidebarTitle: "Suppression"
 description: "PATCH /api/contacts/{id}/suppression sets or clears global_unsubscribed, hard_bounced, and complained suppression flags. Appends email events on change."
 ---
@@ -147,8 +147,8 @@ PATCH /api/contacts/{contact_id}/validation
 
 ### Request body
 
-<ParamField body="status" type="string" required>
-  The validation result. One of: `unknown`, `valid`, `invalid_syntax`, `no_mx`, `disposable`, `risky`, `manually_invalid`, `externally_validated`.
+<ParamField body="status" type="string">
+  The validation result. One of: `unknown`, `valid`, `invalid_syntax`, `no_mx`, `disposable`, `risky`, `manually_invalid`, `externally_validated`. Defaults to `unknown` when omitted.
 </ParamField>
 
 <ParamField body="reason" type="string">

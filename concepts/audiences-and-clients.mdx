@@ -86,7 +86,7 @@ Clients authenticate with named Bearer API keys. Datamailer stores only the **ha
 | Field | Description |
 |---|---|
 | `name` | Human-readable label for the key (unique per active client) |
-| `key_hash` | Bcrypt or similar hash; plaintext is never stored |
+| `key_hash` | Hashed key; plaintext is never stored |
 | `public_id` | Safe-to-display identifier, surfaced as `dm_<public_id>` in the UI and audit logs |
 | `notes` | Optional operator notes |
 | `last_used_at` | Timestamp of most recent authenticated request |

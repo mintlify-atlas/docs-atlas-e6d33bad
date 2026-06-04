@@ -29,7 +29,7 @@ GET /t/o/{tracking_token}.gif
 Links in campaign emails are rewritten to pass through Datamailer's redirect endpoint before reaching the original destination.
 
 ```
-GET /t/c/{tracking_token}?url=https://original-destination.example.com/...
+GET /t/c/{tracking_token}?u=https://original-destination.example.com/...
 ```
 
 - The token is resolved to a `CampaignRecipient`.

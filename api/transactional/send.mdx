@@ -1,7 +1,7 @@
 ---
 title: "POST /api/transactional/send — Send Transactional Email"
 sidebarTitle: "Send Email"
-description: "POST /api/transactional/send queues a transactional email using a template key. Validates context, checks suppression, and returns idempotency replay status."
+description: "POST /api/transactional/send queues a transactional email via a named template. Validates context, checks suppression, and supports idempotency keys."
 ---
 
 `POST /api/transactional/send` is the single entry point for sending templated transactional email through Datamailer. The endpoint validates required template context variables before creating any database records, upserts the contact, checks hard-bounce and complaint suppression, and — if all checks pass — creates a `TransactionalMessage` record with `status=queued` and enqueues a payload to AWS SQS for delivery. Providing an `idempotency_key` makes the call safe to retry: duplicate requests return the existing message without re-queuing.
@@ -148,7 +148,7 @@ Returned when the contact has a hard bounce or complaint on record. The message 
 }
 ```
 
-The `error.reason` field is one of `hard_bounce` or `complaint`.
+The `error.reason` field is one of `hard_bounce`, `complaint`, or `suppressed` (the fallback value when the cause is not a bounce or complaint).
 
 ### HTTP 404 — Template not found
 

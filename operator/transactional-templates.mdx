@@ -1,5 +1,5 @@
 ---
-title: "Managing Transactional Email Templates"
+title: "Managing Transactional Email Templates in Datamailer"
 sidebarTitle: "Templates"
 description: "Create and manage transactional email templates with Django template syntax. Define required context variables for validation before sending."
 ---
@@ -36,7 +36,7 @@ When creating or editing a template (via the Django admin), the following fields
 
 ## Template Rendering
 
-Template bodies and subjects are rendered using Django's `render_template_string` function, which supports the full Django template language. Variables are injected from the `context` object provided in the API request.
+Template bodies and subjects are rendered using Django's template engine (`Template` + `Context`), which supports the full Django template language. Variables are injected from the `context` object provided in the API request.
 
 <CodeGroup>
 ```django Subject template

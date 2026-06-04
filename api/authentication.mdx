@@ -105,13 +105,26 @@ curl $DATAMAILER_URL/api/contacts/status \
 | Client linked to the key is inactive | `401` | `inactive_client` |
 | `client` slug in request does not match authenticated client | `403` | `validation_error` with `client: forbidden` |
 
-All `401` and `403` responses include a JSON body:
+All `401` authentication failures include a JSON body with a `code` and a `message` field:
 
 ```json
 {
   "error": {
     "code": "invalid_api_key",
     "message": "Authentication credentials were not accepted."
+  }
+}
+```
+
+The `403` client slug mismatch is a validation error and uses the validation error format with a `fields` map instead:
+
+```json
+{
+  "error": {
+    "code": "validation_error",
+    "fields": {
+      "client": "forbidden"
+    }
   }
 }
 ```

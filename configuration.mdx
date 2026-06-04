@@ -1,7 +1,7 @@
 ---
-title: "Configure Datamailer with Environment Variables"
+title: "Datamailer Configuration: Environment Variable Reference"
 sidebarTitle: "Configuration"
-description: "Complete reference for all Datamailer environment variables covering Django settings, database, AWS SES, SQS queues, and sending defaults."
+description: "Complete reference for all Datamailer environment variables: Django core, database, AWS SES, SQS queues, sending rate, and webhook validation."
 ---
 
 Datamailer reads all of its runtime configuration from environment variables, loaded at startup from a `.env` file in the project root via `python-dotenv`. There are no hard-coded settings files to edit — copy the example file, fill in the values for your environment, and restart the server.
@@ -78,8 +78,8 @@ The sections below document every supported variable. Variables marked **require
 
 ## Public URL
 
-<ParamField path="PUBLIC_BASE_URL" type="string" default="http://localhost:8000">
-  The externally reachable base URL of your Datamailer deployment, without a trailing slash. Used to construct open-tracking pixel URLs, click-tracking redirect URLs, and unsubscribe links that are embedded in outgoing emails.
+<ParamField path="PUBLIC_BASE_URL" type="string" default="http://localhost:3000">
+  The externally reachable base URL of your Datamailer deployment, without a trailing slash. Used to construct open-tracking pixel URLs, click-tracking redirect URLs, and unsubscribe links that are embedded in outgoing emails. The `.env.example` default is `http://localhost:3000`; the code falls back to `http://localhost:8000` only when the variable is absent entirely.
 
   **Example:** `https://datamailer.example.com`
 </ParamField>
@@ -172,13 +172,36 @@ Queue names are used in contexts where a name is required rather than a URL (for
 
 ## API Docs
 
-<Note>
-  The in-app interactive API docs at `/api-docs/` use `DATAMAILER_API_DOCS_BASE_URL` as the base URL for copy-pasteable `curl` examples. This lets staff run the examples against a different environment — for example, a staging server — without changing the server's own `PUBLIC_BASE_URL`. If not set, it falls back to `PUBLIC_BASE_URL`.
-
-  Set `DATAMAILER_API_DOCS_BASE_URL` when you want the in-app examples to target a different host than the one serving the UI.
+<ParamField path="DATAMAILER_API_DOCS_BASE_URL" type="string" default="">
+  Override the base URL used in copy-pasteable `curl` examples shown in the in-app interactive API reference at `/api-docs/`. Useful when you want the embedded examples to target a staging or remote server without changing the server's own `PUBLIC_BASE_URL`. If not set, falls back to `PUBLIC_BASE_URL`.
 
   **Example:** `https://staging.datamailer.example.com`
-</Note>
+</ParamField>
+
+---
+
+## Advanced Sending & Webhook Settings
+
+<ParamField path="DATAMAILER_SES_MAX_SEND_RATE" type="float" default="10.0">
+  Maximum number of SES send calls per second that the campaign Lambda worker will attempt. Raise this if your SES account has an increased sending rate limit; lower it if you see `ThrottlingException` errors. Fractional values are accepted.
+
+  **Example:** `14.0`
+</ParamField>
+
+<ParamField path="SES_WEBHOOKS_SIGNATURE_MODE" type="string" default="mock (DEBUG=True) / strict (DEBUG=False)">
+  Controls how the `/webhooks/ses` endpoint validates inbound SNS notification signatures.
+
+  | Value | Behaviour |
+  | ----- | --------- |
+  | `strict` | Full SNS signature verification — required for production |
+  | `mock` | Skips verification — set automatically when `DEBUG=True` or during tests |
+
+  Override the default only when running integration tests against a real SNS topic in a non-`DEBUG` environment.
+</ParamField>
+
+<ParamField path="SES_WEBHOOKS_ALLOW_SUBSCRIPTION_CONFIRMATION" type="boolean" default="False">
+  When `True`, the `/webhooks/ses` endpoint will automatically respond to SNS `SubscriptionConfirmation` messages, completing the SNS-to-SQS topic subscription handshake. Leave `False` (the default) and confirm the subscription manually from the AWS console unless you are automating the wiring in a deployment script.
+</ParamField>
 
 ---
 
@@ -192,7 +215,7 @@ SECRET_KEY=                          # optional in DEBUG=True; a dev fallback is
 DATABASE_URL=sqlite:///db.sqlite3
 ALLOWED_HOSTS=localhost,127.0.0.1
 CSRF_TRUSTED_ORIGINS=
-PUBLIC_BASE_URL=http://localhost:8000
+PUBLIC_BASE_URL=http://localhost:3000
 DEFAULT_FROM_EMAIL=newsletter@example.com
 EMAIL_BACKEND=django.core.mail.backends.console.EmailBackend
 

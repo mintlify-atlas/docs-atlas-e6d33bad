@@ -202,6 +202,22 @@ python manage.py export_contacts_csv \
 ```
 </CodeGroup>
 
+### `seed_demo_data`
+
+Populates the local database with a realistic set of demo organizations, audiences, clients, contacts, campaigns, transactional templates, and engagement events for manual operator UI testing. No SES or SQS calls are made — all data is synthetic.
+
+<Warning>
+`seed_demo_data` requires `DEBUG=True` and will raise a `CommandError` if run against a non-debug environment. It is intended exclusively for local development and CI fixture generation.
+</Warning>
+
+The command takes no arguments:
+
+```bash
+python manage.py seed_demo_data
+```
+
+After the command completes, it prints the admin credentials and the stable demo API keys for each seeded client to stdout. The admin login is `admin` / `admin`.
+
 ## API Import and Export
 
 Client applications can perform the same import and export operations over the REST API using a bearer token. See the [API Overview](/api/overview) for full request and response schemas.

@@ -1,7 +1,7 @@
 ---
-title: "POST /api/contacts — Upsert Contact"
+title: "POST /api/contacts — Create or Update a Contact Record"
 sidebarTitle: "Upsert Contact"
-description: "POST /api/contacts creates or updates a contact and subscription. Accepts email, audience, client, status, tags, verified, and email_validation fields."
+description: "POST /api/contacts creates or updates a contact and subscription. Accepts email, audience, status, tags, verified, email_validation, and suppression."
 ---
 
 `POST /api/contacts` is the primary way to sync contact data into Datamailer. It creates or updates the global contact record, creates or updates the audience- and client-scoped subscription, applies email validation and suppression state, and assigns audience-scoped tags — all in a single atomic request.

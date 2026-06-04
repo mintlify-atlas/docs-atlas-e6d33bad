@@ -1,7 +1,7 @@
 ---
-title: "GET /api/contacts.csv — Export Contacts as CSV"
+title: "GET /api/contacts.csv — Export Contacts to CSV File"
 sidebarTitle: "CSV Export"
-description: "GET /api/contacts.csv streams a CSV export of all contacts visible to the authenticated client, including subscription, tag, validation, and suppression columns."
+description: "Export contacts as CSV or JSON for the authenticated client. Includes subscription, tag, email validation, suppression, and updated_at timestamp columns."
 ---
 
 `GET /api/contacts.csv` returns a CSV file containing every contact that has a subscription record for the specified audience and client. The export includes subscription status, verification timestamps, tag assignments, email validation results, suppression flags, unsubscribe details, and the contact's last `updated_at` timestamp — enough to recreate the full contact state in an external system or re-import it later. A companion JSON endpoint (`GET /api/contacts`) returns the same contact set as a paginated JSON array.
